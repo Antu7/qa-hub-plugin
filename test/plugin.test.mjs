@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
-import { appRoot, readAppFile, tools } from "../server/index.mjs";
+import { appRoot, describeProject, readAppFile, tools } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
@@ -602,4 +602,17 @@ test("run each test 5× to check for flaky ones; a push that removes checks carr
   assert.equal(started.at(-1).headless, true);
   await t.qahub_push({ files: ["tests/quotes.spec.ts"], fewerChecks: "The old price banner was removed from the app on purpose" });
   assert.equal(pushed.at(-1).fewerChecks, "The old price banner was removed from the app on purpose");
+  // Test data: the values the code reads from QAHUB_DATA, declared with the test (a person can change them in QA Hub).
+  const { TOOLS } = await import("../server/index.mjs");
+  const push = TOOLS.find((x) => x.name === "qahub_push"); // Claude Code checks a call against this schema
+  assert.ok(push.inputSchema.properties.tests.items.properties.data, "qahub_push takes test data");
+  await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open quotes"], data: [{ name: "customer_name", value: "Acme" }] }] });
+  assert.deepEqual(pushed.at(-1).tests[0].data, [{ name: "customer_name", value: "Acme" }]);
 });
+
+test("the project shows each test's data as QA Hub holds it now — and which values change every run", () => {
+  const said = describeProject({ name: "EHS", slug: "ehs", environments: [], sets: [], tags: [], folders: [], helpers: [], modules: [{ name: "Training", path: "/training", tests: 1 }], tests: [{ ref: "TEST-00044", title: "Create a course", file: "e2e/course.spec.ts", module: "Training", steps: ["Open"],
+    data: [{ name: "course_title", value: "Fire safety", varies: true }, { name: "seats", value: "30" }] }] });
+  assert.match(said, /data: course_title \(different every run\), seats = “30”/);
+});
+

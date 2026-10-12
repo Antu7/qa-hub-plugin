@@ -86,7 +86,7 @@ export function readAppFile(root, rel) {
   return text !== null ? { path: rel2, content: text } : { path: rel2, base64: buf.toString("base64") };
 }
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "qahub_status",
     description: "Check the QA Hub connection: whose API key this is, whether the company's plan is active, the company's projects, and which project this app folder is linked to. Call this first.",
@@ -180,6 +180,7 @@ const TOOLS = [
               applied: { type: "boolean", description: "true when this push applies the change request qahub_gaps listed for this test" },
               sets: { type: "array", items: { type: "string" }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
               distinctFrom: { type: "array", items: { type: "string" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
+              data: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" }, value: { type: "string", maxLength: 500 } } }, description: "The values the test types that a person may want to change (names, emails, amounts): name (lower_snake_case) and default. The code reads them: const data = JSON.parse(process.env.QAHUB_DATA ?? \"{}\"); data.course_title ?? \"Fire safety basics\". A person can change each one in QA Hub or make it different every run, and that choice survives your next push. Leave out = unchanged" },
               needs: { type: "array", maxItems: 10, items: { type: "string" }, description: "ONLY when this test uses what another test makes (\"Delete the order\" needs \"Create an order\"): that test's ref or exact title (one in this push counts). It then runs first, and if it fails this test is skipped — every other test still runs. Leave out for an independent test (the normal case); [] removes a link" },
             },
           },
@@ -290,6 +291,8 @@ export function describeProject(s) {
       if (shown++ >= MAX) break;
       list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
+      // Its test data (QAHUB_DATA) as QA Hub holds it: a person may have changed a value, or made it vary each run.
+      if (t.data?.length) list.push(`    data: ${t.data.map((d) => (d.varies ? `${d.name} (different every run)` : `${d.name} = “${d.value}”`)).join(", ")}`);
     }
   }
   if (s.tests.length > MAX) list.push(`…and ${s.tests.length - MAX} more (${s.tests.length} tests in all).`);
