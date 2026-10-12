@@ -240,7 +240,8 @@ const TOOLS = [
   },
 ];
 
-const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)" };
+const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)",
+  setup: "a step couldn't be done (covered, hidden, disabled, a page that didn't open), so the test never reached its checks — find what got in the way before calling it a bug" };
 /** A run, in words Claude acts on: what failed, where, why, and the page with the video and trace. */
 export function describeRun(run, origin) {
   const url = `${origin}${run.url}`;
