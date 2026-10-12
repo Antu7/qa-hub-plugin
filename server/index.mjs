@@ -220,6 +220,24 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "qahub_fixes",
+    description: "Failing tests a person asked you to fix (\"Ask Claude to fix it\" in QA Hub): each with the step it failed at, the error in plain words and exactly as Playwright said it, what the test is for, and the screenshot of the moment it failed. Read them, find the cause, fix it, then qahub_fix_note and re-run the test.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { project: { type: "string", description: "Leave out to use the linked project" } } },
+  },
+  {
+    name: "qahub_fix_note",
+    description: "Answer a fix request in plain words a non-programmer understands — shown on the run page in QA Hub. kind: \"app\" (the app had a bug and you fixed the app), \"test\" (the app changed on purpose and you updated the test), or \"neither\" (you couldn't fix it — say what a person should look at). Then re-run the test with qahub_run; a pass marks it fixed.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["test", "kind", "note"],
+      properties: {
+        project: { type: "string", description: "Leave out to use the linked project" },
+        test: { type: "string", description: "The test's ref, e.g. TEST-00005" },
+        kind: { type: "string", enum: ["app", "test", "neither"] },
+        note: { type: "string", minLength: 10, maxLength: 500, description: "One or two plain sentences: what was wrong and what you changed (e.g. \"The Create training dialog kept the last title when reopened. It now starts empty.\")" },
+      },
+    },
+  },
 ];
 
 const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)" };
@@ -469,6 +487,35 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (run !== undefined && !(Number.isInteger(run) && run > 0)) throw new QaHubError("run is a run number, like 12");
       return follow(p, run ?? "latest", wait);
     },
+    async qahub_fixes({ project } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      const { fixes } = await qa.call("GET", `/api/v1/projects/${p}/fixes`, undefined, { timeout: SLOW });
+      if (!fixes?.length) return "No fix requests waiting in QA Hub.";
+      // Text Claude reads, and each failure's screenshot as an image it can see.
+      const content = [{ type: "text", text: `${fixes.length} failing test${fixes.length === 1 ? "" : "s"} a person asked you to fix. For each: find the cause — the app (a bug: fix the app) or the test (the app changed on purpose: update the test). Never make it pass by checking less or waiting longer. Then qahub_fix_note in plain words, push the test if you changed it, and qahub_run { tests: [its ref] }.` }];
+      for (const f of fixes) {
+        content.push({ type: "text", text: [
+          `${f.ref} “${f.title}” (${f.file ?? "recorded test"}) — failed in run #${f.run}${f.stepTitle ? ` at step ${f.step + 1}, “${f.stepTitle}”` : ""}; asked by ${f.askedBy}; try ${f.attempt} of 3.`,
+          f.description ? `What it's for: ${f.description}` : "",
+          `Steps: ${f.steps.join(" → ")}`,
+          `What went wrong: ${f.plain ?? "?"}`,
+          f.technical && f.technical !== f.plain ? `Playwright said: ${f.technical}` : "",
+          f.failKind ? `QA Hub's read: ${KIND[f.failKind] ?? f.failKind}.` : "",
+          `Run page (video and trace): ${qa.origin()}${f.url}`,
+          f.screenshot ? "The screenshot of the moment it failed:" : "No screenshot for this one.",
+        ].filter(Boolean).join("\n") });
+        if (f.screenshot) content.push({ type: "image", data: f.screenshot.base64, mimeType: f.screenshot.type });
+      }
+      return { content };
+    },
+    async qahub_fix_note({ project, test, kind, note } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      if (!/^TEST-\d{1,9}$/.test(String(test ?? ""))) throw new QaHubError("test is the test's ref, like TEST-00005");
+      await qa.call("POST", `/api/v1/projects/${p}/fixes/${test}`, { kind, note });
+      return `Noted on ${test} in QA Hub. Now run it again: qahub_run { tests: ["${test}"] } — a pass marks it fixed.`;
+    },
     async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [] } = {}) {
       await qa.whoami();
       const p = projectOf(project);
@@ -529,8 +576,9 @@ export function serve(input = process.stdin, output = process.stdout, impl = too
         const fn = Object.hasOwn(impl, String(params?.name)) ? impl[params.name] : null; // never an inherited "constructor"
         if (!fn) return send({ jsonrpc: "2.0", id, error: { code: -32602, message: `Unknown tool ${params?.name}` } });
         try {
-          const text = await fn(params.arguments ?? {});
-          return send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } });
+          const out = await fn(params.arguments ?? {});
+          // A tool answers in text, or with its own content blocks (text and images).
+          return send({ jsonrpc: "2.0", id, result: Array.isArray(out?.content) ? { content: out.content } : { content: [{ type: "text", text: out }] } });
         } catch (e) {
           // A refusal is an answer Claude should read and relay, not a crash.
           const text = e instanceof QaHubError ? e.message : `QA Hub plugin error: ${String(e?.message ?? e).slice(0, 300)}`;

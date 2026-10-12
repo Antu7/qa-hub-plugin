@@ -17,6 +17,7 @@ const planned = [];
 let planReview = false;
 const started = [];
 let polls = 0, blips = 0;
+const notes = [];
 let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } };
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
   failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time" }],
@@ -56,6 +57,11 @@ const server = http.createServer((req, res) => {
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
       { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
+    if (u.pathname === "/api/v1/projects/freight/fixes") return out(200, { fixes: [{ ref: "TEST-00005", title: "Cancelling Create training saves nothing", file: "tests/training.spec.ts", steps: ["Open Create training, type a title and press Cancel", "Open Create training again"],
+      run: 8, askedBy: "Alex", step: 1, stepTitle: "Open Create training again", attempt: 1, failKind: null, url: "/p/freight/runs/8",
+      plain: "The “Title” box in the “Create training” dialog should have been empty, but it still said “QA Cancel 1”.", technical: "expect(locator).toHaveValue(expected) failed",
+      ...(u.searchParams.get("shots") === "0" ? {} : { screenshot: { base64: PNG.toString("base64"), type: "image/png" } }) }] });
+    if (u.pathname === "/api/v1/projects/freight/fixes/TEST-00005" && req.method === "POST") { notes.push(JSON.parse(b)); return out(200, { ok: true }); }
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "blip") { blips = 0; return out(200, { run: { number: 9, tests: 1, environment: "Local", url: "/p/freight/runs/9" } }); }
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "down") return out(200, { run: { number: 10, tests: 1, environment: "Local", url: "/p/freight/runs/10" } });
     if (u.pathname === "/api/v1/projects/freight/runs/9") return ++blips === 1 ? out(503, { error: { message: "QA Hub is restarting" } }) : out(200, latest);
@@ -145,7 +151,7 @@ test("speaks MCP over stdio: initialize, list the tools, call one", async () => 
   assert.equal((await answer(1)).result.serverInfo.name, "qahub");
   ask({ method: "notifications/initialized" });
   ask({ id: 2, method: "tools/list" });
-  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results"]);
+  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note"]);
   ask({ id: 3, method: "tools/call", params: { name: "qahub_status", arguments: {} } });
   assert.match((await answer(3)).result.content[0].text, /Connected to QA Hub/);
   } finally { child.kill(); }
@@ -533,4 +539,32 @@ test("a test that uses what another makes says so (needs) — pushed, and shown 
   assert.match(await t.qahub_project({}), /TEST-00002 “Sign in” \(tests\/login\.spec\.ts\) — needs TEST-00004/);
   await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Delete a quote", module: "Quotes", steps: ["Delete it"], needs: ["Save a quote"] }] });
   assert.deepEqual(pushed.at(-1).tests[0].needs, ["Save a quote"]);
+});
+
+test("Ask Claude to fix it: Claude brings it up at session start, asks first, sees the screenshot, and answers in plain words", async () => {
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  const { out } = await hook("hooks/session-start.mjs", { cwd: app }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
+  const said = JSON.parse(out).hookSpecificOutput.additionalContext;
+  assert.match(said, /FIX REQUESTS: a person asked you in QA Hub to fix a failing test: TEST-00005 “Cancelling Create training saves nothing” \(run #8, at “Open Create training again”: The “Title” box/);
+  assert.match(said, /shall I fix it now\?" Don't change code before they say yes/);
+
+  const t = as("qh_good");
+  const got = await t.qahub_fixes({});
+  assert.ok(Array.isArray(got.content));
+  assert.match(got.content.map((c) => c.text ?? "").join("\n"), /TEST-00005[\s\S]*What went wrong: The “Title” box[\s\S]*Playwright said: expect\(locator\)\.toHaveValue/);
+  assert.deepEqual(got.content.find((c) => c.type === "image"), { type: "image", data: PNG.toString("base64"), mimeType: "image/png" });
+
+  await assert.rejects(t.qahub_fix_note({ test: "five", kind: "app", note: "something long enough" }), /TEST-00005/);
+  assert.match(await t.qahub_fix_note({ test: "TEST-00005", kind: "app", note: "The dialog kept the last title when reopened. It now starts empty." }), /qahub_run \{ tests: \["TEST-00005"\] \}/);
+  assert.deepEqual(notes.at(-1), { kind: "app", note: "The dialog kept the last title when reopened. It now starts empty." });
+
+  // Over MCP, the screenshot travels as an image block.
+  const { serve } = await import("../server/index.mjs");
+  const { PassThrough } = await import("node:stream");
+  const inp = new PassThrough(), o = new PassThrough(), lines = [];
+  o.on("data", (d) => lines.push(...String(d).split("\n").filter(Boolean).map((x) => JSON.parse(x))));
+  serve(inp, o, as("qh_good"));
+  inp.write(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "qahub_fixes", arguments: {} } }) + "\n");
+  for (let i = 0; i < 50 && !lines.some((x) => x.id === 9); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(lines.find((x) => x.id === 9).result.content.some((c) => c.type === "image"));
 });
