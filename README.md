@@ -6,7 +6,7 @@ a valid key and an active plan, the plugin does nothing.
 
 ## Install
 
-Inside Claude Code:
+Needs **Node.js 18 or newer** on the computer (`node --version`). Inside Claude Code:
 
 ```
 /plugin marketplace add Antu7/qa-hub-plugin
@@ -19,8 +19,8 @@ Developing the plugin itself: `claude plugin marketplace add /path/to/this/folde
 
 Claude Code asks for:
 
-- **QA Hub API key** — from QA Hub → *Plan & API keys*. Stored in your system keychain, never in a file.
-- **QA Hub address** — leave the default unless your company runs its own QA Hub.
+- **QA Hub API key** — from QA Hub → *Plan & API keys*. Claude Code keeps it as a secret setting (the system keychain on macOS), never in your project's files.
+- **QA Hub address** — the address you open QA Hub at (QA Hub's *Claude setup* card shows it). Leave the default for `https://app.qahub.dev`.
 
 Then, in your app's folder:
 
@@ -41,7 +41,7 @@ Changing the key later: `/plugin` → **qahub** → configure.
 | Every request on the server | QA Hub itself refuses a missing, wrong or revoked key (401), an ended plan (402) and a role that may not push (403). **This is the real gate** — the plugin's checks are there to say it clearly. |
 
 The key travels only in the `Authorization` header, only to the configured QA Hub, never through a
-redirect, and never over plain `http` except to this computer (`localhost`, `*.local`).
+redirect, and never over plain `http` except to this computer or the office network (`localhost`, `*.local`, `10.*`, `172.16–31.*`, `192.168.*`).
 
 ## What it can do
 

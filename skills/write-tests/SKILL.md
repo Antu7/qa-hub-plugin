@@ -14,6 +14,7 @@ The person may only say "automate this", "test the training page" or "I want neg
 3. **Design the module you're working on.** `qahub_design { module }`:
    - its behaviours: **untested** and **weak** first, high priority first;
    - the guide for each kind (create, edit, delete, search, validation, workflow, permission, calculation…) — what a professional checks, and what QA Hub requires the code to prove.
+   - **A part of the app QA Hub doesn't have yet** (a page you just built): design and plan answer "no module". Add it first — `qahub_push { modules: [{ name, path: "/its-url", parent }] }` (parent only for a sub-page), nothing else in that push — then design it.
    - Not designed yet, or the feature adds something new → propose behaviours: one per thing a user can do ("Create a quote", "Delete a quote", "Only managers approve"), with kind and priority (money, data loss, access → high).
 4. **Plan test cases, the way a QA engineer would — not only the happy path.** For each behaviour, using the guide:
    - **positive**: the main path, with every value read back after reopening;

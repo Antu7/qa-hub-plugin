@@ -1,21 +1,21 @@
 {
   "name": "qahub",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Claude writes Playwright tests while it builds your app and sends them to QA Hub. Needs a QA Hub API key.",
   "author": { "name": "QA Hub" },
   "userConfig": {
     "api_key": {
       "type": "string",
       "title": "QA Hub API key",
-      "description": "From QA Hub → Plan & API keys. Stored in your system keychain, never in a file.",
+      "description": "From QA Hub → Plan & API keys. Claude Code keeps it as a secret setting (the system keychain on macOS), never in your project's files.",
       "required": true,
       "sensitive": true
     },
     "server": {
       "type": "string",
       "title": "QA Hub address",
-      "description": "Leave as is unless your company runs its own QA Hub.",
-      "default": "http://localhost:3100"
+      "description": "The address you open QA Hub at — shown on QA Hub's Claude setup page. Leave as is for app.qahub.dev.",
+      "default": "https://app.qahub.dev"
     }
   }
 }

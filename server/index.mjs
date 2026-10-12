@@ -3,9 +3,10 @@
 // No dependencies. Every tool checks the API key first (see qahub.mjs) — a revoked key or an ended plan
 // stops it within a minute, whatever the session already had.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { client, QaHubError, VERSION } from "./qahub.mjs";
+import { client, isMain, QaHubError, VERSION } from "./qahub.mjs";
 
 const LINK_FILE = "qahub.json"; // in the app's repository: { "project": "<slug>" }
 const MAX_FILE = 512 * 1024;
@@ -14,12 +15,39 @@ const CODE = /\.(ts|js|mjs|cjs|json)$/i;
 /** Text, or bytes (a picture, a PDF, a spreadsheet)? Read as UTF-8 strictly: anything that isn't is bytes. */
 const asText = (buf) => { if (buf.includes(0)) return null; try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); } catch { return null; } };
 const SLUG = /^[a-z0-9-]{1,60}$/;
+const MAX_PUSH = 29 * 1024 * 1024; // QA Hub takes a push body up to 30 MB
+const SLOW = 120_000; // a push or a pull carries whole files
 
-/** The folder this app lives in: the nearest one up with qahub.json, else a git root, else the cwd. */
-export function appRoot(start = process.cwd()) {
-  for (let d = path.resolve(start); ; d = path.dirname(d)) {
-    if (fs.existsSync(path.join(d, LINK_FILE)) || fs.existsSync(path.join(d, ".git"))) return d;
-    if (path.dirname(d) === d) return path.resolve(start);
+/**
+ * Where a test file may live — QA Hub's own rule (lib/paths.ts), applied here too, both ways: before a file is
+ * read to send it, and before a file QA Hub sends is written. Nothing hidden (.git, .claude, .github, .env…),
+ * nothing in node_modules, only code and files a test uploads. Returns why not, or null.
+ */
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const ALLOWED = /\.(ts|js|mjs|cjs|json|csv|txt|xml|png|jpe?g|gif|webp|svg|bmp|pdf|xlsx?|docx?|pptx|zip|mp4|mov|mp3|wav)$/i;
+const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json"]);
+export function pathProblem(rel) {
+  if (typeof rel !== "string" || !rel || rel.length > 300) return "not a usable path";
+  if (rel.includes("\\")) return "use forward slashes";
+  if (RESERVED.has(rel)) return "QA Hub makes this file itself";
+  const segs = rel.split("/");
+  if (segs.some((x) => !SEGMENT.test(x))) return "hidden or unusual folder or file name";
+  if (segs.some((x) => x.toLowerCase() === "node_modules")) return "inside node_modules";
+  if (!ALLOWED.test(rel)) return "only code and files a test uploads";
+  return null;
+}
+const inside = (root, p) => { const r = path.relative(root, p); return r === "" || (!r.startsWith("..") && !path.isAbsolute(r)); };
+
+/**
+ * The folder this app lives in: the nearest one up with qahub.json, else a git root, else the cwd.
+ * Never the home folder because it is a git repo (dotfiles): that would make all of home "the app".
+ */
+export function appRoot(start = process.cwd(), home = os.homedir()) {
+  const from = path.resolve(start);
+  for (let d = from; ; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, LINK_FILE))) return d;
+    if (d !== home && fs.existsSync(path.join(d, ".git"))) return d;
+    if (path.dirname(d) === d) return from;
   }
 }
 function linkedProject(root) {
@@ -44,6 +72,8 @@ export function readAppFile(root, rel) {
   const st = fs.statSync(real);
   if (!st.isFile()) throw new QaHubError(`${rel}: not a file`);
   const rel2 = inside.split(path.sep).join("/");
+  const why = pathProblem(rel2);
+  if (why) throw new QaHubError(`${rel}: can't be sent to QA Hub (${why})`);
   // Code is text, up to 512 KB. A file a test uploads goes as its bytes (base64), up to 10 MB — never
   // read as text, which would quietly corrupt a picture or a PDF.
   if (CODE.test(base)) {
@@ -141,7 +171,7 @@ const TOOLS = [
             properties: {
               file: { type: "string" }, title: { type: "string" }, module: { type: "string" },
               tags: { type: "array", items: { type: "string" } },
-              steps: { type: "array", items: { type: "object", required: ["title", "expect"], properties: { title: { type: "string" }, expect: { type: "string" } } }, description: "Its test.step names in order, each with what should happen (for a test QA Hub already has, plain strings keep the stored expected results)" },
+              steps: { type: "array", items: { anyOf: [{ type: "string" }, { type: "object", required: ["title", "expect"], properties: { title: { type: "string" }, expect: { type: "string" } } }] }, description: "Its test.step names in order, each with what should happen (for a test QA Hub already has, plain strings keep the stored expected results)" },
               type: { type: "string", enum: ["functional", "negative", "boundary", "validation", "permission", "workflow", "smoke"], description: "Required for a new test" }, priority: { type: "string", enum: ["high", "medium", "low"] },
               preconditions: { type: "string" }, covers: { type: "array", items: { type: "string" }, description: "Behaviour names of its module it verifies (required for a new test unless smoke)" },
               waiver: { type: "string", description: "Only with a true reason (20+ characters) why the code can't prove what QA Hub's depth check asks — shown in QA Hub; the behaviour then never reads proven" },
@@ -276,10 +306,17 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     return p;
   };
   // Wait for a run to finish, asking every few seconds; past the limit, say how to ask again.
+  // A blip (QA Hub slow or briefly down) is asked again, a few times; a run that was started is never lost track of.
   const follow = async (p, number, wait) => {
     const end = Date.now() + waitMs;
-    for (;;) {
-      const { run } = await qa.call("GET", `/api/v1/projects/${p}/runs/${number}`);
+    for (let misses = 0; ;) {
+      let run;
+      try { ({ run } = await qa.call("GET", `/api/v1/projects/${p}/runs/${number}`)); misses = 0; } catch (e) {
+        if (number === "latest" || !["unreachable", "timeout", "server", "not_qahub"].includes(e.code)) throw e;
+        if (++misses > 3) throw new QaHubError(`${e.message} Run #${number} was started and may still be going — read it later with qahub_results { run: ${number}, wait: true }. Don't start it again.`, e.code);
+        await new Promise((r) => setTimeout(r, pollMs));
+        continue;
+      }
       if (run.status !== "running" || !wait || Date.now() > end) return describeRun(run, qa.origin());
       await new Promise((r) => setTimeout(r, pollMs));
     }
@@ -345,40 +382,48 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     async qahub_pull({ overwrite = [], project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
-      const { files } = await qa.call("GET", `/api/v1/projects/${p}/files?content=1`);
+      const { files } = await qa.call("GET", `/api/v1/projects/${p}/files?content=1`, undefined, { timeout: SLOW });
       const realRoot = fs.realpathSync(root);
       const titles = (src) => [...String(src).matchAll(/\btest(?:\.(?:only|skip|fixme))?\(\s*(["'`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2]);
+      const eol = (x) => x.replace(/\r\n/g, "\n"); // a Windows checkout's line endings aren't a difference
       const added = [], replaced = [], same = [], differs = [], refused = [];
-      for (const f of files) {
-        const rel = String(f.path);
-        const dest = path.resolve(root, rel);
-        const inside = path.relative(root, dest);
-        if (!inside || inside.startsWith("..") || path.isAbsolute(inside) || /(^|\/)(\.git|node_modules)(\/|$)/.test(rel) || /^\.env/i.test(path.basename(rel))) { refused.push(rel); continue; }
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        if (path.relative(realRoot, fs.realpathSync(path.dirname(dest))).startsWith("..")) { refused.push(rel); continue; } // a symlinked folder pointing out
-        // A file a test uploads: its bytes, compared byte for byte.
-        if (f.binary) {
-          if (!f.base64) { refused.push(`${rel} (QA Hub no longer has its bytes)`); continue; }
-          const bytes = Buffer.from(f.base64, "base64");
-          if (!fs.existsSync(dest)) { fs.writeFileSync(dest, bytes); added.push(rel); continue; }
-          if (Buffer.compare(fs.readFileSync(dest), bytes) === 0) { same.push(rel); continue; }
-          if (overwrite.includes(rel)) { fs.writeFileSync(dest, bytes); replaced.push(rel); continue; }
-          differs.push(`${rel} — QA Hub has a different file`);
-          continue;
-        }
-        if (!fs.existsSync(dest)) { fs.writeFileSync(dest, f.content); added.push(rel); continue; }
-        const local = fs.readFileSync(dest, "utf8");
-        if (local === f.content) { same.push(rel); continue; }
-        if (overwrite.includes(rel)) { fs.writeFileSync(dest, f.content); replaced.push(rel); continue; }
-        const theirs = titles(f.content).filter((x) => !titles(local).includes(x));
-        differs.push(`${rel}${theirs.length ? ` — QA Hub's copy also has ${theirs.map((x) => `“${x}”`).join(", ")}` : ""}`);
+      for (const f of Array.isArray(files) ? files : []) {
+        const rel = String(f?.path ?? "");
+        // QA Hub's own path rule, on the way OUT too: a bad row or a compromised server can't drop
+        // .git hooks, .claude settings, CI workflows or anything outside this folder.
+        const why = pathProblem(rel);
+        if (why) { refused.push(`${rel || "(no path)"} (${why})`); continue; }
+        const dest = path.join(root, ...rel.split("/"));
+        try {
+          let d = path.dirname(dest);
+          while (!fs.existsSync(d)) d = path.dirname(d);
+          if (!inside(realRoot, fs.realpathSync(d))) { refused.push(`${rel} (its folder points outside this app)`); continue; } // checked before any folder is made
+          if (fs.lstatSync(dest, { throwIfNoEntry: false })?.isSymbolicLink()) { refused.push(`${rel} (a link is there)`); continue; }
+          let want;
+          if (f.binary) {
+            if (typeof f.base64 !== "string" || !f.base64) { refused.push(`${rel} (QA Hub no longer has its bytes)`); continue; }
+            want = Buffer.from(f.base64, "base64");
+          } else {
+            if (typeof f.content !== "string") { refused.push(`${rel} (QA Hub sent no text for it)`); continue; }
+            want = f.content;
+          }
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          if (!fs.existsSync(dest)) { fs.writeFileSync(dest, want); added.push(rel); continue; }
+          const local = fs.readFileSync(dest);
+          if (f.binary ? Buffer.compare(local, want) === 0 : eol(local.toString("utf8")) === eol(want)) { same.push(rel); continue; }
+          if (overwrite.includes(rel)) { fs.writeFileSync(dest, want); replaced.push(rel); continue; }
+          if (f.binary) { differs.push(`${rel} — QA Hub has a different file`); continue; }
+          const mine = titles(local.toString("utf8"));
+          const theirs = titles(want).filter((x) => !mine.includes(x));
+          differs.push(`${rel}${theirs.length ? ` — QA Hub's copy also has ${theirs.map((x) => `“${x}”`).join(", ")}` : ""}`);
+        } catch (e) { refused.push(`${rel} (couldn't write it: ${e.code ?? e.message})`); }
       }
       return [
         `QA Hub's test files for ${p}: ${files.length}.`,
         ...(added.length ? [`Added: ${added.join(", ")}.`] : []),
         ...(replaced.length ? [`Replaced with QA Hub's copy: ${replaced.join(", ")}.`] : []),
         ...(differs.length ? [`Different here: ${differs.join("; ")}. Keep both sides: add the teammates' tests to your copy (or take QA Hub's with overwrite and re-add yours), then push.`] : []),
-        ...(refused.length ? [`Not written (path not allowed here): ${refused.join(", ")}.`] : []),
+        ...(refused.length ? [`Not written: ${refused.join("; ")}.`] : []),
         ...(!added.length && !replaced.length && !differs.length ? ["This folder already has QA Hub's latest."] : []),
       ].join("\n");
     },
@@ -400,11 +445,13 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (b.untested.length) lines.push(`Test next: ${b.untested.slice(0, 10).map((x) => `${x.name} (${x.module}, ${x.kind}, ${x.priority})`).join("; ")}.`);
       if (b.failing.length || b.weak.length) lines.push(`Not proven: ${[...b.failing, ...b.weak].slice(0, 10).map((x) => `${x.name} (${x.module}, ${b.failing.includes(x) ? "failing" : "weak"})`).join("; ")}.`);
       if (b.notDesigned.length) lines.push(`Not designed yet: ${b.notDesigned.join(", ")} — qahub_design them and propose their behaviours.`);
-      return [...lines, JSON.stringify(g, null, 2)].join("\n");
+      return [...lines, capped(g)].join("\n");
     },
     async qahub_run({ project, tests, tag, module, set, environment, browser, show = false, wait = true } = {}) {
       await qa.whoami();
       const p = projectOf(project);
+      // An empty list is a mistake, never "everything": that would run the whole project on their computer.
+      if (Array.isArray(tests) && !tests.length) throw new QaHubError("No tests named (tests is empty), so nothing was run. Name the refs (qahub_push returns them), or pick a tag, module or set.");
       if ([tests?.length ? tests : null, tag, module, set].filter(Boolean).length > 1) throw new QaHubError("Pick tests by one of: tests, tag, module or set.");
       const body = { ...(tests?.length ? { tests } : {}), ...(tag ? { tag } : {}), ...(module ? { module } : {}), ...(set ? { set } : {}), ...(environment ? { environment } : {}), ...(browser ? { browser } : {}), headless: !show };
       const { run } = await qa.call("POST", `/api/v1/projects/${p}/runs/start`, body).catch((e) => {
@@ -421,9 +468,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (run !== undefined && !(Number.isInteger(run) && run > 0)) throw new QaHubError("run is a run number, like 12");
       return follow(p, run ?? "latest", wait);
     },
-    async qahub_push({ project, files = [], tests = [], modules = [], remove = [], behaviours = [] } = {}) {
+    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [] } = {}) {
       await qa.whoami();
       const p = projectOf(project);
+      const tests = given.map((t) => (typeof t?.file === "string" ? { ...t, file: t.file.replaceAll("\\", "/") } : t)); // a Windows path
       // Every new test lands in a real module: refused here, before anything is sent, with what to do.
       if (tests.length) {
         const s = await qa.call("GET", `/api/v1/projects/${p}`);
@@ -433,7 +481,12 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         }
       }
       const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}) };
-      const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body);
+      const size = Buffer.byteLength(JSON.stringify(body));
+      if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
+      const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
+        if (e.code === "timeout") throw new QaHubError(`${e.message} The push may still have landed — check with qahub_project before sending it again.`, "timeout");
+        throw e;
+      });
       const refs = res?.refs ?? [];
       return [
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
@@ -443,13 +496,20 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         ...refs.filter((r) => r.note).map((r) => `${r.ref}: ${r.note}.`),
         ...(res?.inbox?.length ? [`In Inbox (no module): ${res.inbox.join("; ")}.`] : []),
         ...(res?.removed?.length ? [`Moved to QA Hub's recycle bin: ${res.removed.join(", ")}.`] : []),
-        JSON.stringify(res, null, 2),
+        capped(res),
       ].join("\n");
     },
   };
 }
 
+/** QA Hub's full answer for Claude to read — capped, so a big project can't flood the conversation. */
+function capped(x, max = 6_000) {
+  const s = JSON.stringify(x, null, 2);
+  return s.length > max ? `${s.slice(0, max)}\n… (cut — ${s.length - max} more characters)` : s;
+}
+
 // ---- MCP over stdio ------------------------------------------------------------------------------
+const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]; // what this server can speak; newest first
 export function serve(input = process.stdin, output = process.stdout, impl = tools()) {
   const send = (msg) => output.write(JSON.stringify(msg) + "\n");
   const rl = readline.createInterface({ input });
@@ -460,12 +520,12 @@ export function serve(input = process.stdin, output = process.stdout, impl = too
     if (id === undefined) return; // a notification (initialized, cancelled…)
     try {
       if (method === "initialize") {
-        return send({ jsonrpc: "2.0", id, result: { protocolVersion: params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "qahub", version: VERSION } } });
+        return send({ jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOLS.includes(params?.protocolVersion) ? params.protocolVersion : PROTOCOLS[0], capabilities: { tools: {} }, serverInfo: { name: "qahub", version: VERSION } } });
       }
       if (method === "ping") return send({ jsonrpc: "2.0", id, result: {} });
       if (method === "tools/list") return send({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
       if (method === "tools/call") {
-        const fn = impl[params?.name];
+        const fn = Object.hasOwn(impl, String(params?.name)) ? impl[params.name] : null; // never an inherited "constructor"
         if (!fn) return send({ jsonrpc: "2.0", id, error: { code: -32602, message: `Unknown tool ${params?.name}` } });
         try {
           const text = await fn(params.arguments ?? {});
@@ -484,4 +544,9 @@ export function serve(input = process.stdin, output = process.stdout, impl = too
   return rl;
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("server/index.mjs")) serve();
+if (isMain(import.meta.url)) {
+  // Older Node has no fetch: every tool then says what to install, instead of the server dying unseen.
+  const old = Number(process.versions.node.split(".")[0]) < 18;
+  const refuse = async () => { throw new QaHubError(`QA Hub needs Node.js 18 or newer — this computer has ${process.version}. Install the current Node.js from nodejs.org, then restart Claude Code.`); };
+  serve(process.stdin, process.stdout, old ? Object.fromEntries(TOOLS.map((t) => [t.name, refuse])) : tools());
+}

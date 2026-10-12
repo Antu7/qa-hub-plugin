@@ -7,8 +7,8 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { newer, serverUrl, updateNote } from "../server/qahub.mjs";
-import { readAppFile, tools } from "../server/index.mjs";
+import { newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
+import { appRoot, readAppFile, tools } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
@@ -16,7 +16,7 @@ const pushed = [];
 const planned = [];
 let planReview = false;
 const started = [];
-let polls = 0;
+let polls = 0, blips = 0;
 let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } };
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
   failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time" }],
@@ -56,6 +56,15 @@ const server = http.createServer((req, res) => {
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
       { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
+    if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "blip") { blips = 0; return out(200, { run: { number: 9, tests: 1, environment: "Local", url: "/p/freight/runs/9" } }); }
+    if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "down") return out(200, { run: { number: 10, tests: 1, environment: "Local", url: "/p/freight/runs/10" } });
+    if (u.pathname === "/api/v1/projects/freight/runs/9") return ++blips === 1 ? out(503, { error: { message: "QA Hub is restarting" } }) : out(200, latest);
+    if (u.pathname === "/api/v1/projects/freight/runs/10") return out(503, { error: { message: "QA Hub is restarting" } });
+    if (u.pathname === "/api/v1/projects/hostile/files") return out(200, { files: [
+      { path: ".GIT/hooks/post-checkout", content: "#!/bin/sh\nrm -rf ~\n" }, { path: ".claude/settings.json", content: "{}" }, { path: ".github/workflows/x.yml", content: "x" },
+      { path: "NODE_MODULES/x.js", content: "x" }, { path: "package.json", content: "{}" }, { path: "CLAUDE.md", content: "x" }, { path: "../escape.ts", content: "x" },
+      { path: "tests\\win.ts", content: "x" }, { path: "/etc/x.ts", content: "x" }, { path: "tests/nulled.spec.ts", content: null },
+      { path: "tests/ok-after-bad.spec.ts", content: "ok\n" }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST") { started.push(JSON.parse(b)); polls = 0; return out(200, { run: { number: 8, tests: 2, environment: "Local", url: "/p/freight/runs/8" } }); }
     if (u.pathname === "/api/v1/projects/freight/runs/8") return out(200, ++polls < 2 ? { run: { number: 8, status: "running", tests: 2, url: "/p/freight/runs/8" } } : failedRun);
     if (u.pathname === "/api/v1/projects/freight/runs/latest") return out(200, latest);
@@ -152,19 +161,20 @@ test("session start: says plainly when the key is bad, never prints it, never bl
   assert.match(good.out, /connected as Ana \(Acme\)/);
   const bad = await run("qh_revoked_secret_value");
   assert.equal(bad.code, 0);
-  assert.match(bad.out, /NOT connected — Your QA Hub API key is not valid/);
+  assert.match(bad.out, /not connected — Your QA Hub API key is not valid/);
   assert.doesNotMatch(bad.out, /qh_revoked_secret_value/);
 });
 
 test("the Playwright checklist is handed over once per session, only for test files", async () => {
   const { checklistFor } = await import("../hooks/test-checklist.mjs");
   const seen = path.join(os.tmpdir(), `qahub-checklist-test-${process.pid}-${Date.now()}`);
-  assert.equal(checklistFor({ tool_input: { file_path: "src/app.ts" } }, seen), null);
-  const first = checklistFor({ tool_input: { file_path: "tests/quotes.spec.ts" } }, seen);
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  assert.equal(checklistFor({ cwd: app, tool_input: { file_path: "src/app.ts" } }, seen), null);
+  const first = checklistFor({ cwd: app, tool_input: { file_path: "tests/quotes.spec.ts" } }, seen);
   assert.equal(first.hookSpecificOutput.hookEventName, "PostToolUse");
   assert.match(first.hookSpecificOutput.additionalContext, /never first\(\)\/nth\(\)/);
   assert.ok(first.hookSpecificOutput.additionalContext.length < 2500);
-  assert.equal(checklistFor({ tool_input: { file_path: "tests/other.spec.ts" } }, seen), null); // once
+  assert.equal(checklistFor({ cwd: app, tool_input: { file_path: "tests/other.spec.ts" } }, seen), null); // once
   fs.rmSync(seen);
 });
 
@@ -361,4 +371,158 @@ test("a file a test uploads: a picture goes as its bytes, a CSV as text; pulled 
   assert.match(await t.qahub_pull({}), /Added:[^\n]*tests\/fixtures\/robot\.png/);
   assert.deepEqual(fs.readFileSync(path.join(app, "tests/fixtures/robot.png")), PNG);
   assert.doesNotMatch(await t.qahub_pull({}), /robot\.png/, "the same bytes: nothing to say");
+});
+
+// ---- production hardening (0.7.5) -------------------------------------------------------------------
+
+const hook = (file, stdin, env = {}, dir = path.join(HERE, "..")) => new Promise((ok) => {
+  const c = spawn(process.execPath, [path.join(dir, file)], { env: { ...process.env, ...env } });
+  let out = ""; c.stdout.on("data", (d) => (out += d)); c.on("close", (code) => ok({ code, out }));
+  c.stdin.end(stdin === undefined ? "" : JSON.stringify(stdin));
+});
+
+test("the server and hooks start from a path with a space and through a symlink (as on Windows / dotfiles setups)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-paths-"));
+  const spaced = path.join(tmp, "QA Hub plugin");
+  fs.cpSync(path.join(HERE, ".."), spaced, { recursive: true, filter: (src) => !/[\\/](\.git|node_modules)([\\/]|$)/.test(src) });
+  const linked = path.join(tmp, "linked");
+  fs.symlinkSync(spaced, linked);
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  try {
+    for (const dir of [spaced, linked]) {
+      const { out } = await hook("hooks/test-checklist.mjs", { session_id: `paths-${Date.now()}-${Math.random()}`.replace(".", ""), cwd: app, tool_input: { file_path: path.join(app, "tests/quotes.spec.ts") } }, {}, dir);
+      assert.match(out, /QA Hub checklist/, `checklist runs from ${dir}`);
+      const child = spawn(process.execPath, [path.join(dir, "server/index.mjs")], { cwd: app, env: { ...process.env, QAHUB_KEY: "qh_good", QAHUB_SERVER: base } });
+      const said = await new Promise((ok) => { let o = ""; child.stdout.on("data", (d) => { o += d; if (o.includes("\n")) ok(o); }); setTimeout(() => ok(o), 3000); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n"); });
+      child.kill();
+      assert.match(said, /"serverInfo":\{"name":"qahub"/, `MCP server answers from ${dir}`);
+    }
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("the address: the default is QA Hub's own; office-network addresses work over http; a public one needs https", () => {
+  assert.equal(DEFAULT_SERVER, "https://app.qahub.dev");
+  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, "../.claude-plugin/plugin.json"), "utf8"));
+  assert.equal(manifest.userConfig.server.default, DEFAULT_SERVER, "one default, everywhere");
+  for (const ok of ["http://10.110.100.85:3100", "http://192.168.1.20:3100", "http://172.20.0.5"]) assert.equal(serverUrl(ok), ok);
+  for (const bad of ["http://172.32.0.1", "http://8.8.8.8", "http://10.example.com"]) assert.throws(() => serverUrl(bad), /https/);
+});
+
+test("pull writes only QA Hub's kind of file: never .git, .claude, CI, node_modules or outside the folder; one bad entry doesn't lose the rest", async () => {
+  const said = await as("qh_good").qahub_pull({ project: "hostile" });
+  for (const bad of [".git/hooks/post-checkout", ".claude", ".github", "NODE_MODULES", "node_modules/x.js", "CLAUDE.md", "tests/win.ts"]) assert.equal(fs.existsSync(path.join(app, bad)), false, `${bad} not written`);
+  assert.equal(fs.existsSync(path.join(path.dirname(app), "escape.ts")), false);
+  assert.match(said, /Not written: \.GIT\/hooks\/post-checkout \(hidden/);
+  assert.match(said, /tests\/nulled\.spec\.ts \(QA Hub sent no text for it\)/);
+  assert.match(said, /Added: tests\/ok-after-bad\.spec\.ts/, "the good file after a bad one still lands, and is reported");
+  fs.rmSync(path.join(app, "tests/ok-after-bad.spec.ts"));
+});
+
+test("pushing never reads hidden files, keys or anything that isn't test code or a file a test uploads", () => {
+  fs.mkdirSync(path.join(app, ".GIT2"), { recursive: true });
+  fs.writeFileSync(path.join(app, ".GIT2/config"), "url = https://token@github.com/x");
+  fs.writeFileSync(path.join(app, ".npmrc"), "//registry/:_authToken=x");
+  fs.writeFileSync(path.join(app, "id_rsa"), "PRIVATE");
+  for (const f of [".GIT2/config", ".npmrc", "id_rsa"]) assert.throws(() => readAppFile(app, f), /can't be sent|never sent/, f);
+});
+
+test("an address that answers but isn't QA Hub is said plainly — never 'your plan has ended'", async () => {
+  const html = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end("<html>Welcome</html>"); });
+  await new Promise((r) => html.listen(0, "127.0.0.1", r));
+  try {
+    const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: `http://127.0.0.1:${html.address().port}` }, app);
+    await assert.rejects(t.qahub_status(), (e) => /answered, but not like QA Hub/.test(e.message) && !/plan has ended/.test(e.message));
+  } finally { html.close(); }
+});
+
+test("following a run: a blip is asked again; if QA Hub stays down, the run number is never lost", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  assert.match(await t.qahub_run({ tag: "blip" }), /Run #9 finished/);
+  await assert.rejects(t.qahub_run({ tag: "down" }), /Run #10 was started[\s\S]*qahub_results \{ run: 10, wait: true \}[\s\S]*Don't start it again/);
+});
+
+test("qahub_run with an empty test list runs nothing — never the whole project", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  const before = started.length;
+  await assert.rejects(t.qahub_run({ tests: [] }), /nothing was run/);
+  assert.equal(started.length, before);
+});
+
+test("in a folder not linked to QA Hub the hooks stay quiet: no checklist for a Jest file, one short line at start", async () => {
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "not-qahub-"));
+  fs.mkdirSync(path.join(other, ".git"));
+  try {
+    const { checklistFor } = await import("../hooks/test-checklist.mjs");
+    assert.equal(checklistFor({ cwd: other, tool_input: { file_path: path.join(other, "src/sum.test.ts") } }, path.join(other, "seen")), null);
+    const { out } = await hook("hooks/session-start.mjs", { cwd: other }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
+    const said = JSON.parse(out).hookSpecificOutput.additionalContext;
+    assert.match(said, /isn't linked to a QA Hub project\. Use the qahub tools only when the user asks/);
+    assert.doesNotMatch(said, /write Playwright tests for it/);
+  } finally { fs.rmSync(other, { recursive: true, force: true }); }
+});
+
+test("session start against a QA Hub that never answers: done in seconds, says so", async () => {
+  const hang = http.createServer(() => {});
+  await new Promise((r) => hang.listen(0, "127.0.0.1", r));
+  try {
+    const t0 = Date.now();
+    const { out } = await hook("hooks/session-start.mjs", { cwd: app }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: `http://127.0.0.1:${hang.address().port}` });
+    assert.ok(Date.now() - t0 < 8_000, `took ${Date.now() - t0} ms`);
+    assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /didn't answer within 3 s/);
+  } finally { hang.closeAllConnections(); hang.close(); }
+});
+
+test("a push over QA Hub's 30 MB limit is refused before sending, with what to do", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  const big = ["a", "b", "c"].map((x) => `tests/fixtures/big-${x}.pdf`);
+  for (const f of big) fs.writeFileSync(path.join(app, f), Buffer.alloc(8 * 1024 * 1024, 7));
+  const before = pushed.length;
+  try {
+    await assert.rejects(t.qahub_push({ files: big }), /up to 30 MB at once[\s\S]*Nothing was sent/);
+    assert.equal(pushed.length, before);
+  } finally { for (const f of big) fs.rmSync(path.join(app, f)); }
+});
+
+test("MCP: an inherited name is not a tool; an unknown protocol version gets one this server speaks", async () => {
+  const { serve } = await import("../server/index.mjs");
+  const { PassThrough } = await import("node:stream");
+  const inp = new PassThrough(), out = new PassThrough();
+  const got = [];
+  out.on("data", (d) => got.push(...String(d).split("\n").filter(Boolean).map((x) => JSON.parse(x))));
+  serve(inp, out, as("qh_good"));
+  inp.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2099-01-01" } }) + "\n");
+  inp.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "constructor", arguments: {} } }) + "\n");
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(got.find((x) => x.id === 1).result.protocolVersion, "2025-11-25");
+  assert.match(got.find((x) => x.id === 2).error.message, /Unknown tool constructor/);
+});
+
+test("the app folder is never the whole home folder, even when home is a git repo", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "home-"));
+  fs.mkdirSync(path.join(home, ".git"));
+  fs.mkdirSync(path.join(home, "shop/src"), { recursive: true });
+  try {
+    assert.equal(appRoot(path.join(home, "shop/src"), home), path.join(home, "shop/src"));
+    fs.writeFileSync(path.join(home, "shop/qahub.json"), "{}");
+    assert.equal(appRoot(path.join(home, "shop/src"), home), path.join(home, "shop"));
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("Windows: a file with CRLF line endings is the same file; a backslash path in a push is sent with slashes; git -C dir push is checked", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  fs.mkdirSync(path.join(app, "tests/helpers"), { recursive: true });
+  fs.writeFileSync(path.join(app, "tests/helpers/nav.ts"), "export const nav = 1;\r\n");
+  assert.doesNotMatch(await t.qahub_pull({}), /Different here:[^\n]*nav\.ts/);
+  await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests\\quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
+  assert.equal(pushed.at(-1).tests[0].file, "tests/quotes.spec.ts");
+  const { pushCheck } = await import("../hooks/push-check.mjs");
+  latest = failedRun;
+  try {
+    const out = await pushCheck({ cwd: app, tool_input: { command: `git -C ${app} push origin main` } }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
+    assert.equal(out?.hookSpecificOutput.permissionDecision, "ask");
+  } finally { latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } }; }
 });

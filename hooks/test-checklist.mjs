@@ -5,6 +5,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { appRoot } from "../server/index.mjs";
+import { isMain } from "../server/qahub.mjs";
 
 export const CHECKLIST = `QA Hub checklist for Playwright tests (shown once per session):
 1. Tests start signed in: QA Hub signs in once per run. No log-in steps; never a password, key or token in a file.
@@ -26,11 +28,14 @@ export const isTestFile = (p) => typeof p === "string" && /\.(spec|test)\.[cm]?[
 export function checklistFor(input, seen) {
   const file = input?.tool_input?.file_path ?? input?.tool_input?.path;
   if (!isTestFile(file)) return null;
+  // Only in an app linked to QA Hub: a Jest or Vitest file in any other project is none of QA Hub's business.
+  const cwd = input?.cwd || process.cwd();
+  if (!fs.existsSync(path.join(appRoot(path.dirname(path.resolve(cwd, file))), "qahub.json"))) return null;
   try { fs.writeFileSync(seen, "", { flag: "wx" }); } catch { return null; } // already shown this session
   return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: CHECKLIST } };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   let raw = "";
   process.stdin.on("data", (c) => (raw += c));
   process.stdin.on("end", () => {

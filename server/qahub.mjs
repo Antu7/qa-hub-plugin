@@ -2,7 +2,21 @@
 // The key only ever travels in the Authorization header, only to the configured QA Hub, never through
 // a redirect, and never over plain http except to this computer or the local network.
 
-export const VERSION = "0.7.4";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+
+export const VERSION = "0.7.5";
+/** Where QA Hub lives unless the plugin settings name another address. One place, used by the server and the hooks. */
+export const DEFAULT_SERVER = "https://app.qahub.dev";
+
+/**
+ * Is this file the script Node was started with? Compared as real paths: a plain string compare of
+ * import.meta.url with argv[1] fails on Windows (C:\…), for a path with a space (%20) and through a symlink —
+ * and then the MCP server or a hook silently never runs.
+ */
+export function isMain(url, argv1 = process.argv[1]) {
+  try { return !!argv1 && fs.realpathSync(argv1) === fs.realpathSync(fileURLToPath(url)); } catch { return false; }
+}
 
 export class QaHubError extends Error {
   constructor(message, code) { super(message); this.code = code; }
@@ -12,8 +26,11 @@ export class QaHubError extends Error {
 export function serverUrl(raw) {
   let u;
   try { u = new URL(String(raw || "").trim()); } catch { throw new QaHubError("The QA Hub address in the plugin settings isn't a web address.", "bad_server"); }
-  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname) || u.hostname.endsWith(".local") || u.hostname.endsWith(".localhost");
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) throw new QaHubError("The QA Hub address must start with https:// (plain http is only allowed on this computer).", "bad_server");
+  const h = u.hostname;
+  // This computer, or the office network (a QA Hub on a teammate's machine): a private address or a .local name.
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(h) || h.endsWith(".local") || h.endsWith(".localhost")
+    || /^(10\.\d+|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+$/.test(h);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) throw new QaHubError("The QA Hub address must start with https:// (plain http is only allowed on this computer or the office network).", "bad_server");
   return u.origin;
 }
 
@@ -28,31 +45,38 @@ function explain(status, body, server) {
   return new QaHubError(said || `QA Hub answered ${status}.`, "server");
 }
 
-export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB_SERVER, fetchImpl = fetch } = {}) {
+export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB_SERVER, fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   key = String(key ?? "").trim();
   let base;
   const ready = () => {
     // A placeholder that was never filled in counts as no key.
     if (!key || key.startsWith("${")) throw new QaHubError("No QA Hub API key yet. Run /plugin, open qahub and add your key (QA Hub → Plan & API keys).", "no_key");
     if (/\s/.test(key) || key.length > 200) throw new QaHubError("The QA Hub API key in the plugin settings has spaces or line breaks in it — paste it again.", "no_key");
-    return (base ??= serverUrl(server));
+    return (base ??= serverUrl(String(server ?? "").trim() || DEFAULT_SERVER));
   };
-  async function call(method, path, body) {
+  /** One request. `timeout` (ms) is longer for a push or a pull, which carry whole files. */
+  async function call(method, path, body, { timeout = timeoutMs } = {}) {
     const origin = ready();
-    let res;
+    const slow = () => new QaHubError(`QA Hub at ${origin} didn't answer within ${Math.round(timeout / 1000)} s.`, "timeout");
+    let res, text;
     try {
       res = await fetchImpl(origin + path, {
         method,
         headers: { Authorization: `Bearer ${key}`, "User-Agent": `qahub-claude-plugin/${VERSION}`, ...(body ? { "Content-Type": "application/json" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         redirect: "error",
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(timeout),
       });
-    } catch {
+      text = await res.text();
+    } catch (e) {
+      if (e?.name === "TimeoutError" || e?.name === "AbortError") throw slow();
       throw new QaHubError(`Couldn't reach QA Hub at ${origin}. Check the address in the plugin settings and your connection.`, "unreachable");
     }
-    const json = await res.json().catch(() => null);
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* not QA Hub's JSON */ }
     if (!res.ok) throw explain(res.status, json, origin);
+    // A page that answers but isn't QA Hub (a website, a login portal, a typo'd address) — never read as "no data".
+    if (!json || typeof json !== "object") throw new QaHubError(`${origin} answered, but not like QA Hub does. Check the QA Hub address in the plugin settings (/plugin → qahub).`, "not_qahub");
     return json;
   }
 
