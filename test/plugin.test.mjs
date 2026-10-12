@@ -20,7 +20,9 @@ let polls = 0, blips = 0;
 const notes = [];
 let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } };
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
-  failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time" }],
+  failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time",
+    context: { url: "http://localhost:3000/quotes", title: "Quotes", page: '- heading "Quotes"\n- status: Quote failed', code: "  11 |   await page.getByRole('button', { name: 'Save' }).click();\n> 12 |   await expect(page.getByRole('status')).toHaveText('Quote saved');", at: { file: "tests/quotes.spec.ts", line: 12 } },
+    values: { "Customer name": "Acme 4821" } }],
   flaky: [{ ref: "TEST-00002", title: "Open quotes", warning: "Passed on the second try — the first try failed: timeout" }] } };
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0xff, 0xfe, 0x01]);
 const server = http.createServer((req, res) => {
@@ -62,6 +64,7 @@ const server = http.createServer((req, res) => {
       plain: "The “Title” box in the “Create training” dialog should have been empty, but it still said “QA Cancel 1”.", technical: "expect(locator).toHaveValue(expected) failed",
       ...(u.searchParams.get("shots") === "0" ? {} : { screenshot: { base64: PNG.toString("base64"), type: "image/png" } }) }] });
     if (u.pathname === "/api/v1/projects/freight/fixes/TEST-00005" && req.method === "POST") { notes.push(JSON.parse(b)); return out(200, { ok: true }); }
+    if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "again") return out(200, { run: { number: 8, tests: 2, environment: "Local", url: "/p/freight/runs/8", alreadyStarted: true } });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "blip") { blips = 0; return out(200, { run: { number: 9, tests: 1, environment: "Local", url: "/p/freight/runs/9" } }); }
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "down") return out(200, { run: { number: 10, tests: 1, environment: "Local", url: "/p/freight/runs/10" } });
     if (u.pathname === "/api/v1/projects/freight/runs/9") return ++blips === 1 ? out(503, { error: { message: "QA Hub is restarting" } }) : out(200, latest);
@@ -567,4 +570,32 @@ test("Ask Claude to fix it: Claude brings it up at session start, asks first, se
   inp.write(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "qahub_fixes", arguments: {} } }) + "\n");
   for (let i = 0; i < 50 && !lines.some((x) => x.id === 9); i++) await new Promise((r) => setTimeout(r, 20));
   assert.ok(lines.find((x) => x.id === 9).result.content.some((c) => c.type === "image"));
+});
+
+test("a run QA Hub says was already started (Claude retrying after a timeout) is followed, not reported as new", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  polls = 0;
+  assert.match(await t.qahub_run({ tag: "again", wait: false }), /Run #8 was already started a moment ago/);
+});
+
+test("a failure comes with where it happened: the page, the failing code lines, the values it typed", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  polls = 0;
+  const said = await t.qahub_run({ tests: ["TEST-00004"] });
+  assert.match(said, /On the page: http:\/\/localhost:3000\/quotes \(“Quotes”\)/);
+  assert.match(said, /status: Quote failed/);
+  assert.match(said, /tests\/quotes\.spec\.ts:12[\s\S]*> 12 \|/);
+  assert.match(said, /Values it used: Customer name = “Acme 4821”/);
+});
+
+test("run each test 5× to check for flaky ones; a push that removes checks carries its reason", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  polls = 0;
+  await t.qahub_run({ tests: ["TEST-00004"], repeat: 5, wait: false });
+  assert.equal(started.at(-1).repeat, 5);
+  await t.qahub_push({ files: ["tests/quotes.spec.ts"], fewerChecks: "The old price banner was removed from the app on purpose" });
+  assert.equal(pushed.at(-1).fewerChecks, "The old price banner was removed from the app on purpose");
 });

@@ -186,6 +186,7 @@ const TOOLS = [
         },
         behaviours: { type: "array", items: { type: "object", required: ["module", "name", "kind"], properties: { module: { type: "string" }, name: { type: "string" }, kind: { type: "string", enum: ["create", "view", "edit", "delete", "search", "validation", "workflow", "permission", "calculation", "navigation", "other"] }, priority: { type: "string", enum: ["high", "medium", "low"] }, description: { type: "string" } } }, description: "Behaviours the app has that QA Hub doesn't list yet (a test in this push may cover one)" },
         remove: { type: "array", items: { type: "string" }, description: "Refs of tests to take out on purpose (they go to QA Hub's recycle bin) — e.g. a test deleted from its file. Never to get past a refusal." },
+        fewerChecks: { type: "string", minLength: 20, maxLength: 300, description: "ONLY when a check (expect) truly has to go because the app changed on purpose — the real reason. While a person has asked you to fix a test, a push that removes checks is refused without it; never use it to make a failing test pass" },
         modules: { type: "array", items: { type: "object", properties: { name: { type: "string" }, path: { type: "string" }, parent: { type: "string", description: "The parent module's path, for a sub-page (e.g. /quotes for /quotes/print)" } }, required: ["name", "path"] }, description: "Modules the app has that QA Hub doesn't yet (qahub_project lists what exists): each with its URL path and, for a sub-page, its parent's path. QA Hub adds them; it never renames an existing module." },
       },
     },
@@ -204,6 +205,7 @@ const TOOLS = [
         environment: { type: "string", description: "Which environment (qahub_status lists them); leave out for the first" },
         browser: { type: "string", enum: ["chrome", "firefox", "webkit", "edge"] },
         show: { type: "boolean", description: "true opens a visible browser window on the person's computer (default: runs in the background)" },
+        repeat: { type: "integer", minimum: 1, maximum: 10, description: "Run each test this many times in a row — 5 to check whether a test is flaky (it then says \"Failed 2 of 5 times\")" },
         wait: { type: "boolean", description: "Wait for the result (default true, up to about 5 minutes); false returns the run number at once" },
       },
     },
@@ -243,13 +245,24 @@ const TOOLS = [
 const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)",
   setup: "a step couldn't be done (covered, hidden, disabled, a page that didn't open), so the test never reached its checks — find what got in the way before calling it a bug" };
 /** A run, in words Claude acts on: what failed, where, why, and the page with the video and trace. */
+/** Where a failure happened: the page (address, title, what it showed), the failing code lines, the values typed. */
+export function whereItFailed(ctx, values) {
+  const out = [];
+  if (ctx?.url) out.push(`On the page: ${ctx.url}${ctx.title ? ` (“${ctx.title}”)` : ""}`);
+  if (ctx?.page) out.push(`The page showed:\n${ctx.page.split("\n").slice(0, 15).map((l) => `    ${l}`).join("\n")}`);
+  if (ctx?.code) out.push(`${ctx.at ? `${ctx.at.file}:${ctx.at.line}` : "The code"}:\n${ctx.code.split("\n").slice(0, 12).map((l) => `    ${l}`).join("\n")}`);
+  const v = values && Object.entries(values);
+  if (v?.length) out.push(`Values it used: ${v.slice(0, 8).map(([k, x]) => `${k} = “${x}”`).join(", ")}`);
+  return out.length ? `\n  ${out.join("\n  ")}` : "";
+}
+
 export function describeRun(run, origin) {
   const url = `${origin}${run.url}`;
   if (run.status === "running") return `Run #${run.number} is still running (${run.tests} test${run.tests === 1 ? "" : "s"}) — ${url}\nAsk again with qahub_results { run: ${run.number}, wait: true }.`;
   const lines = [`Run #${run.number} finished: ${run.passed} passed, ${run.failed} failed${run.skipped ? `, ${run.skipped} skipped` : ""}${run.browser ? ` (${run.browser}${run.durationSec ? `, ${run.durationSec} s` : ""})` : ""}${run.failed || run.verdict !== "pass" ? "" : " — all passed"} — ${url}`];
   if (run.verdict === "stopped") lines.push(`It stopped before the end${run.stopReason ? `: ${run.stopReason}` : ""}.`);
   for (const f of run.failures ?? []) {
-    lines.push(`- ${f.ref ?? "(deleted test)"} “${f.title}”${f.file ? ` (${f.file})` : ""} failed${f.failedStep ? ` at “${f.failedStep}”` : ""}${f.kind && KIND[f.kind] ? ` — ${KIND[f.kind]}` : ""}${f.since ? `; ${f.since}` : ""}.\n  ${f.error ?? "No error text."}${f.evidence?.length ? `\n  The app said: ${f.evidence.slice(0, 2).join(" | ")}` : ""}`);
+    lines.push(`- ${f.ref ?? "(deleted test)"} “${f.title}”${f.file ? ` (${f.file})` : ""} failed${f.failedStep ? ` at “${f.failedStep}”` : ""}${f.kind && KIND[f.kind] ? ` — ${KIND[f.kind]}` : ""}${f.since ? `; ${f.since}` : ""}.\n  ${f.error ?? "No error text."}${f.evidence?.length ? `\n  The app said: ${f.evidence.slice(0, 2).join(" | ")}` : ""}${whereItFailed(f.context, f.values)}`);
   }
   if (run.flaky?.length) lines.push(`Flaky: ${run.flaky.map((x) => `${x.ref} “${x.title}”`).join(", ")} — passed only on the second try; find what makes it unreliable (a wait for the wrong thing, data left by an earlier test).`);
   if (run.failed) lines.push("Next: for each failure decide whether the app is wrong (fix the app) or the test no longer matches the app (fix the test). Never make it pass by checking less or waiting longer. Then push and run again. The screenshot, video and trace are on the run page.");
@@ -467,19 +480,22 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (b.notDesigned.length) lines.push(`Not designed yet: ${b.notDesigned.join(", ")} — qahub_design them and propose their behaviours.`);
       return [...lines, capped(g)].join("\n");
     },
-    async qahub_run({ project, tests, tag, module, set, environment, browser, show = false, wait = true } = {}) {
+    async qahub_run({ project, tests, tag, module, set, environment, browser, show = false, wait = true, repeat } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       // An empty list is a mistake, never "everything": that would run the whole project on their computer.
       if (Array.isArray(tests) && !tests.length) throw new QaHubError("No tests named (tests is empty), so nothing was run. Name the refs (qahub_push returns them), or pick a tag, module or set.");
       if ([tests?.length ? tests : null, tag, module, set].filter(Boolean).length > 1) throw new QaHubError("Pick tests by one of: tests, tag, module or set.");
-      const body = { ...(tests?.length ? { tests } : {}), ...(tag ? { tag } : {}), ...(module ? { module } : {}), ...(set ? { set } : {}), ...(environment ? { environment } : {}), ...(browser ? { browser } : {}), headless: !show };
+      const body = { ...(tests?.length ? { tests } : {}), ...(tag ? { tag } : {}), ...(module ? { module } : {}), ...(set ? { set } : {}), ...(environment ? { environment } : {}), ...(browser ? { browser } : {}), headless: !show, ...(repeat > 1 ? { repeat } : {}) };
       const { run } = await qa.call("POST", `/api/v1/projects/${p}/runs/start`, body).catch((e) => {
         // Not connected (or an old qahub): what the person does about it, in one line Claude can relay.
         if (/Connect your computer/i.test(e.message)) throw new QaHubError(`${e.message} Tell the person once: in QA Hub → Computers, run the connect command it shows in a terminal on the computer where the app runs, and leave it open. Until then the tests are sent but not run.`);
         throw e;
       });
-      if (!wait) return `Run #${run.number} started: ${run.tests} test${run.tests === 1 ? "" : "s"} on ${run.environment} — ${qa.origin()}${run.url}\nRead it with qahub_results { run: ${run.number}, wait: true }.`;
+      // QA Hub found the same run already going (this call is a retry): it's that run, not a second one.
+      const said = run.alreadyStarted ? `Run #${run.number} was already started a moment ago (the same tests) — following it instead of starting another`
+        : `Run #${run.number} started: ${run.tests} test${run.tests === 1 ? "" : "s"} on ${run.environment}`;
+      if (!wait) return `${said} — ${qa.origin()}${run.url}\nRead it with qahub_results { run: ${run.number}, wait: true }.`;
       return follow(p, run.number, true);
     },
     async qahub_results({ project, run, wait = false } = {}) {
@@ -504,6 +520,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           f.technical && f.technical !== f.plain ? `Playwright said: ${f.technical}` : "",
           f.failKind ? `QA Hub's read: ${KIND[f.failKind] ?? f.failKind}.` : "",
           `Run page (video and trace): ${qa.origin()}${f.url}`,
+          whereItFailed(f.context, f.values).trim(),
           f.screenshot ? "The screenshot of the moment it failed:" : "No screenshot for this one.",
         ].filter(Boolean).join("\n") });
         if (f.screenshot) content.push({ type: "image", data: f.screenshot.base64, mimeType: f.screenshot.type });
@@ -517,7 +534,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.call("POST", `/api/v1/projects/${p}/fixes/${test}`, { kind, note });
       return `Noted on ${test} in QA Hub. Now run it again: qahub_run { tests: ["${test}"] } — a pass marks it fixed.`;
     },
-    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [] } = {}) {
+    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [], fewerChecks } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       const tests = given.map((t) => (typeof t?.file === "string" ? { ...t, file: t.file.replaceAll("\\", "/") } : t)); // a Windows path
@@ -529,7 +546,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           throw new QaHubError(`${lost.map((m) => `Module “${m}”`).join(", ")} isn't in QA Hub, so ${lost.length === 1 ? "its tests" : "those tests"} would land in Inbox. QA Hub's modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}. Use one of those (the one for the page the test covers), or — if it's a part of the app QA Hub doesn't have yet — add it in the same push: modules: [{ name: "${lost[0]}", path: "/…", parent: "/…" }] (its URL path; parent only for a sub-page). Nothing was sent.`);
         }
       }
-      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}) };
+      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(fewerChecks ? { fewerChecks } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
