@@ -2,7 +2,7 @@
 // The key only ever travels in the Authorization header, only to the configured QA Hub, never through
 // a redirect, and never over plain http except to this computer or the local network.
 
-export const VERSION = "0.7.1";
+export const VERSION = "0.7.2";
 
 export class QaHubError extends Error {
   constructor(message, code) { super(message); this.code = code; }

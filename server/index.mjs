@@ -307,6 +307,9 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (res.review && n) lines.push(`${n} test case${n === 1 ? "" : "s"} planned — waiting for review in QA Hub: ${qa.origin()}/p/${p}/tests. A person approves, asks for changes or rejects each one. Tell the user, and stop here for these tests: code for an unapproved plan is refused. Their answers show in qahub_gaps (changeRequests).`);
       else if (n) lines.push(`${n} test case${n === 1 ? "" : "s"} planned and approved — write ${n === 1 ? "its" : "their"} code now: each test("…") named exactly as planned, its test.step names equal to the planned steps.`);
       for (const x of res.planned) lines.push(`- ${x.ref} “${x.title}” in ${x.module} (${x.stage})`);
+      // Already a test (it has code): its design was updated, not a new test — change ITS code and push it.
+      if (res.updated?.length) lines.push(`Already tests — their test cases were updated, no new ones made. Change their code to match and qahub_push it (same file, same title):`);
+      for (const x of res.updated ?? []) lines.push(`- ${x.ref} “${x.title}” in ${x.module}`);
       if (res.behaviours?.added?.length) lines.push(`Behaviours added${res.review ? " (proposed until approved)" : ""}: ${res.behaviours.added.join(", ")}.`);
       for (const d of res.behaviours?.dropped ?? []) lines.push(`“${d}” was dropped by a person — don't propose it again or test it.`);
       return lines.join("\n") || "Nothing planned.";

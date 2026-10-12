@@ -23,7 +23,7 @@ The person may only say "automate this", "test the training page" or "I want neg
    - **delete**: gone from the list, from search and its page;
    - **workflow / permission**: every allowed move or role, and every forbidden one blocked.
    Each test case: a title, its type, priority, what must be true before it starts, and **every step with its expected result**. Check `qahub_find` for each — a **SAME** test already exists: improve it, never write a second one.
-5. **`qahub_plan`** the behaviours and test cases. If the project reviews plans, the reply says they're waiting: tell the user (with the link) and **stop** for those tests. Otherwise write the code.
+5. **`qahub_plan`** the behaviours and test cases. A test case whose title is already a test in that module updates that test (the reply lists it under "already tests") — change its code, never write a second one; `distinctFrom` never applies to the same title. If the project reviews plans, the reply says they're waiting: tell the user (with the link) and **stop** for those tests. Otherwise write the code.
 6. **Write the code** (`@playwright/test`, in the project's spec folders, reusing its helpers; `qahub_pull` first if you change a shared file). QA Hub runs the file itself:
    - tests start signed in — no log-in steps, never a password, key or token;
    - `page.goto("/path")` — QA Hub sets the address;
