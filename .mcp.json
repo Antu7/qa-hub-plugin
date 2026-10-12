@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "qahub": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.mjs"],
+      "env": {
+        "QAHUB_KEY": "${user_config.api_key}",
+        "QAHUB_SERVER": "${user_config.server}"
+      }
+    }
+  }
+}

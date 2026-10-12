@@ -1,0 +1,16 @@
+{
+  "name": "qahub",
+  "owner": {
+    "name": "QA Hub"
+  },
+  "metadata": {
+    "description": "QA Hub for Claude Code: Claude writes and sends end-to-end tests for the app it builds."
+  },
+  "plugins": [
+    {
+      "name": "qahub",
+      "source": "./",
+      "description": "Claude writes Playwright tests while it builds your app and sends them to QA Hub. Needs a QA Hub API key."
+    }
+  ]
+}

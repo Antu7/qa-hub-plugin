@@ -1,0 +1,21 @@
+{
+  "name": "qahub",
+  "version": "0.7.1",
+  "description": "Claude writes Playwright tests while it builds your app and sends them to QA Hub. Needs a QA Hub API key.",
+  "author": { "name": "QA Hub" },
+  "userConfig": {
+    "api_key": {
+      "type": "string",
+      "title": "QA Hub API key",
+      "description": "From QA Hub → Plan & API keys. Stored in your system keychain, never in a file.",
+      "required": true,
+      "sensitive": true
+    },
+    "server": {
+      "type": "string",
+      "title": "QA Hub address",
+      "description": "Leave as is unless your company runs its own QA Hub.",
+      "default": "http://localhost:3100"
+    }
+  }
+}
