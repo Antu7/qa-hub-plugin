@@ -13,7 +13,7 @@ Needs **Node.js 18 or newer** on the computer (`node --version`). Inside Claude 
 /plugin install qahub@qahub
 ```
 
-**Turn on automatic updates** (once): `/plugin` → **Marketplaces** → **qahub** → **Enable auto-update**. New versions then install by themselves and load the next time Claude Code starts. Claude Code leaves this off for every marketplace except Anthropic's own, and a plugin can't switch it on for you. Without it, Claude tells you at the start of a session when a newer version is out; update with `claude plugin marketplace update qahub`. A company admin can enforce it for everyone with managed settings: `"extraKnownMarketplaces": { "qahub": { "source": { "source": "github", "repo": "Antu7/qa-hub-plugin" }, "autoUpdate": true } }`.
+**Turn on automatic updates** (once): `/plugin` → **Marketplaces** → **qahub** → **Enable auto-update**. New versions then install by themselves and load the next time Claude Code starts. Claude Code leaves this off for every marketplace except Anthropic's own, and a plugin can't switch it on for you. Without it, Claude tells you at the start of a session when a newer version is out; update with `claude plugin marketplace update qahub` and then `claude plugin update qahub@qahub` (the first only refreshes the list; the second installs the new version), then restart Claude Code. A company admin can enforce it for everyone with managed settings: `"extraKnownMarketplaces": { "qahub": { "source": { "source": "github", "repo": "Antu7/qa-hub-plugin" }, "autoUpdate": true } }`.
 
 Developing the plugin itself: `claude plugin marketplace add /path/to/this/folder` instead (the folder is its own marketplace).
 

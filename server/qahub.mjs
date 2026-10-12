@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.7";
+export const VERSION = "0.7.8";
 /** Where QA Hub lives unless the plugin settings name another address. One place, used by the server and the hooks. */
 export const DEFAULT_SERVER = "https://app.qahub.dev";
 
@@ -121,5 +121,5 @@ export async function publishedVersion() {
 /** What Claude tells the person once, when this copy is older than the published one. */
 export function updateNote(latest, current = VERSION) {
   if (!newer(latest, current)) return "";
-  return ` A newer QA Hub plugin is out (${current} → ${latest}). Tell the user once, before other work: run \`claude plugin marketplace update qahub\` in a terminal (or /plugin → Marketplaces → qahub → Update), then restart Claude Code. To never do this by hand again: /plugin → Marketplaces → qahub → Enable auto-update.`;
+  return ` A newer QA Hub plugin is out (${current} → ${latest}). Tell the user once, before other work: in a terminal run \`claude plugin marketplace update qahub\` and then \`claude plugin update qahub@qahub\` (the first only refreshes the list; the second installs it), then restart Claude Code. To never do this by hand again: /plugin → Marketplaces → qahub → Enable auto-update.`;
 }
