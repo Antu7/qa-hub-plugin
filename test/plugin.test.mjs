@@ -37,7 +37,7 @@ const server = http.createServer((req, res) => {
       sets: [{ name: "Release check", description: "Before every release", tests: ["TEST-00004"] }],
       tags: ["smoke"], folders: ["tests/quotes"], helpers: ["tests/helpers/nav.ts"],
       tests: [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", tags: ["smoke"], file: "tests/quotes.spec.ts", description: "A rep saves a quote.", steps: ["Open Quotes", "Save it"], by: "written by Claude" },
-        { ref: "TEST-00002", title: "Sign in", module: "Log in", tags: [], file: "tests/login.spec.ts", steps: ["Sign in"], by: "recorded by Rima" }] });
+        { ref: "TEST-00002", title: "Sign in", module: "Log in", tags: [], file: "tests/login.spec.ts", steps: ["Sign in"], by: "recorded by Rima", needs: ["TEST-00004"] }] });
     if (u.pathname === "/api/v1/projects/freight/design") return out(200, u.searchParams.get("module") === "Wishlist"
       ? { project: "freight", module: { name: "Wishlist", path: "/wishlist" }, designed: false, behaviours: [], note: "Wishlist isn't designed yet — propose its behaviours (what a user can do there) with qahub_plan, then plan their test cases.",
           guide: { create: { consider: ["the happy path → reopen → every value is shown"], gate: "reads a typed value back after reloading or reopening the record" } } }
@@ -284,7 +284,7 @@ test("qahub_pull: brings the team's latest test files; never overwrites a local 
 test("qahub_project shows each test's steps and who made it; push carries distinctFrom and remove", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
-  assert.match(await t.qahub_project({}), /TEST-00002 “Sign in” \(tests\/login\.spec\.ts\) — recorded by Rima\n    Sign in/);
+  assert.match(await t.qahub_project({}), /TEST-00002 “Sign in” \(tests\/login\.spec\.ts\) — needs TEST-00004 — recorded by Rima\n    Sign in/);
   await t.qahub_push({ files: ["tests/quotes.spec.ts"], remove: ["TEST-00009"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a draft quote", module: "Quotes", steps: ["Save draft"], distinctFrom: ["TEST-00004"] }] });
   assert.deepEqual(pushed.at(-1).remove, ["TEST-00009"]);
   assert.deepEqual(pushed.at(-1).tests[0].distinctFrom, ["TEST-00004"]);
@@ -525,4 +525,12 @@ test("Windows: a file with CRLF line endings is the same file; a backslash path 
     const out = await pushCheck({ cwd: app, tool_input: { command: `git -C ${app} push origin main` } }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
     assert.equal(out?.hookSpecificOutput.permissionDecision, "ask");
   } finally { latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } }; }
+});
+
+test("a test that uses what another makes says so (needs) — pushed, and shown in the project", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  assert.match(await t.qahub_project({}), /TEST-00002 “Sign in” \(tests\/login\.spec\.ts\) — needs TEST-00004/);
+  await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Delete a quote", module: "Quotes", steps: ["Delete it"], needs: ["Save a quote"] }] });
+  assert.deepEqual(pushed.at(-1).tests[0].needs, ["Save a quote"]);
 });

@@ -180,6 +180,7 @@ const TOOLS = [
               applied: { type: "boolean", description: "true when this push applies the change request qahub_gaps listed for this test" },
               sets: { type: "array", items: { type: "string" }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
               distinctFrom: { type: "array", items: { type: "string" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
+              needs: { type: "array", maxItems: 10, items: { type: "string" }, description: "ONLY when this test uses what another test makes (\"Delete the order\" needs \"Create an order\"): that test's ref or exact title (one in this push counts). It then runs first, and if it fails this test is skipped — every other test still runs. Leave out for an independent test (the normal case); [] removes a link" },
             },
           },
         },
@@ -254,7 +255,7 @@ export function describeProject(s) {
     list.push(`${mod}:`);
     for (const t of ts) {
       if (shown++ >= MAX) break;
-      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
+      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
     }
   }
