@@ -596,6 +596,10 @@ test("run each test 5× to check for flaky ones; a push that removes checks carr
   polls = 0;
   await t.qahub_run({ tests: ["TEST-00004"], repeat: 5, wait: false });
   assert.equal(started.at(-1).repeat, 5);
+  // On QA Hub's own test computers: no computer of the person's needed, always headless.
+  await t.qahub_run({ tests: ["TEST-00004"], where: "server", show: true, wait: false });
+  assert.equal(started.at(-1).where, "server");
+  assert.equal(started.at(-1).headless, true);
   await t.qahub_push({ files: ["tests/quotes.spec.ts"], fewerChecks: "The old price banner was removed from the app on purpose" });
   assert.equal(pushed.at(-1).fewerChecks, "The old price banner was removed from the app on purpose");
 });
