@@ -9,6 +9,10 @@ import { client, QaHubError, VERSION } from "./qahub.mjs";
 
 const LINK_FILE = "qahub.json"; // in the app's repository: { "project": "<slug>" }
 const MAX_FILE = 512 * 1024;
+const MAX_UPLOAD = 10 * 1024 * 1024; // a file a test uploads (a picture, a PDF)
+const CODE = /\.(ts|js|mjs|cjs|json)$/i;
+/** Text, or bytes (a picture, a PDF, a spreadsheet)? Read as UTF-8 strictly: anything that isn't is bytes. */
+const asText = (buf) => { if (buf.includes(0)) return null; try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); } catch { return null; } };
 const SLUG = /^[a-z0-9-]{1,60}$/;
 
 /** The folder this app lives in: the nearest one up with qahub.json, else a git root, else the cwd. */
@@ -39,8 +43,17 @@ export function readAppFile(root, rel) {
   }
   const st = fs.statSync(real);
   if (!st.isFile()) throw new QaHubError(`${rel}: not a file`);
-  if (st.size > MAX_FILE) throw new QaHubError(`${rel}: over 512 KB`);
-  return { path: inside.split(path.sep).join("/"), content: fs.readFileSync(real, "utf8") };
+  const rel2 = inside.split(path.sep).join("/");
+  // Code is text, up to 512 KB. A file a test uploads goes as its bytes (base64), up to 10 MB — never
+  // read as text, which would quietly corrupt a picture or a PDF.
+  if (CODE.test(base)) {
+    if (st.size > MAX_FILE) throw new QaHubError(`${rel}: over 512 KB`);
+    return { path: rel2, content: fs.readFileSync(real, "utf8") };
+  }
+  if (st.size > MAX_UPLOAD) throw new QaHubError(`${rel}: over 10 MB — tests can upload files up to 10 MB`);
+  const buf = fs.readFileSync(real);
+  const text = st.size <= MAX_FILE ? asText(buf) : null;
+  return text !== null ? { path: rel2, content: text } : { path: rel2, base64: buf.toString("base64") };
 }
 
 const TOOLS = [
@@ -114,7 +127,7 @@ const TOOLS = [
   },
   {
     name: "qahub_push",
-    description: "Send Playwright test files and the tests in them to QA Hub, all or nothing. Files are read from disk by path (inside this app's folder only). Each test names its file, a plain-language title, a description of what it protects and why, the app module it covers, tags, and the steps a person would read.",
+    description: "Send Playwright test files and the tests in them to QA Hub, all or nothing. Files are read from disk by path (inside this app's folder only) — test code and helpers, and any file a test uploads (a picture, a PDF, a spreadsheet, a CSV, up to 10 MB), which QA Hub stores and puts next to the test on every run. Each test names its file, a plain-language title, a description of what it protects and why, the app module it covers, tags, and the steps a person would read.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -343,6 +356,16 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         if (!inside || inside.startsWith("..") || path.isAbsolute(inside) || /(^|\/)(\.git|node_modules)(\/|$)/.test(rel) || /^\.env/i.test(path.basename(rel))) { refused.push(rel); continue; }
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         if (path.relative(realRoot, fs.realpathSync(path.dirname(dest))).startsWith("..")) { refused.push(rel); continue; } // a symlinked folder pointing out
+        // A file a test uploads: its bytes, compared byte for byte.
+        if (f.binary) {
+          if (!f.base64) { refused.push(`${rel} (QA Hub no longer has its bytes)`); continue; }
+          const bytes = Buffer.from(f.base64, "base64");
+          if (!fs.existsSync(dest)) { fs.writeFileSync(dest, bytes); added.push(rel); continue; }
+          if (Buffer.compare(fs.readFileSync(dest), bytes) === 0) { same.push(rel); continue; }
+          if (overwrite.includes(rel)) { fs.writeFileSync(dest, bytes); replaced.push(rel); continue; }
+          differs.push(`${rel} — QA Hub has a different file`);
+          continue;
+        }
         if (!fs.existsSync(dest)) { fs.writeFileSync(dest, f.content); added.push(rel); continue; }
         const local = fs.readFileSync(dest, "utf8");
         if (local === f.content) { same.push(rel); continue; }

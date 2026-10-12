@@ -2,7 +2,7 @@
 // The key only ever travels in the Authorization header, only to the configured QA Hub, never through
 // a redirect, and never over plain http except to this computer or the local network.
 
-export const VERSION = "0.7.2";
+export const VERSION = "0.7.4";
 
 export class QaHubError extends Error {
   constructor(message, code) { super(message); this.code = code; }
@@ -70,4 +70,32 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
     return me;
   }
   return { call, whoami, origin: () => ready() };
+}
+
+// ---- updates ------------------------------------------------------------------------------------
+// Claude Code can't be told by a plugin to update itself (third-party marketplaces don't auto-update unless
+// the person turns it on), so the session start compares this copy with the published one and says so.
+const PUBLISHED = "https://raw.githubusercontent.com/Antu7/qa-hub-plugin/main/.claude-plugin/plugin.json";
+
+/** Is version a newer than b? ("0.7.10" > "0.7.9"); anything unreadable is never newer. */
+export function newer(a, b) {
+  const p = (v) => (/^\d+(\.\d+){2}$/.test(String(v ?? "")) ? String(v).split(".").map(Number) : null);
+  const x = p(a), y = p(b);
+  if (!x || !y) return false;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+
+/** The published version, or null (offline, slow, moved): never more than 2 s, never an error. */
+export async function publishedVersion() {
+  try {
+    const r = await fetch(PUBLISHED, { signal: AbortSignal.timeout(2_000), redirect: "error" });
+    return r.ok ? (await r.json()).version ?? null : null;
+  } catch { return null; }
+}
+
+/** What Claude tells the person once, when this copy is older than the published one. */
+export function updateNote(latest, current = VERSION) {
+  if (!newer(latest, current)) return "";
+  return ` A newer QA Hub plugin is out (${current} → ${latest}). Tell the user once, before other work: run \`claude plugin marketplace update qahub\` in a terminal (or /plugin → Marketplaces → qahub → Update), then restart Claude Code. To never do this by hand again: /plugin → Marketplaces → qahub → Enable auto-update.`;
 }

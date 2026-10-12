@@ -7,7 +7,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { serverUrl } from "../server/qahub.mjs";
+import { newer, serverUrl, updateNote } from "../server/qahub.mjs";
 import { readAppFile, tools } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +21,7 @@ let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3,
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
   failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time" }],
   flaky: [{ ref: "TEST-00002", title: "Open quotes", warning: "Passed on the second try — the first try failed: timeout" }] } };
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0xff, 0xfe, 0x01]);
 const server = http.createServer((req, res) => {
   let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => {
     const key = (req.headers.authorization ?? "").replace(/^Bearer /, "");
@@ -52,7 +53,8 @@ const server = http.createServer((req, res) => {
       ? [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", file: "tests/quotes.spec.ts", steps: ["Open Quotes", "Save it"], by: "written by Claude", same: true }] : [] });
     if (u.pathname === "/api/v1/projects/freight/files") return out(200, { files: [
       { path: "tests/quotes.spec.ts", sha: "x", content: "import { test } from '@playwright/test';\ntest('Save a quote', async () => {});\ntest('Print a quote', async () => {});\n" },
-      { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" }] });
+      { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
+      { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST") { started.push(JSON.parse(b)); polls = 0; return out(200, { run: { number: 8, tests: 2, environment: "Local", url: "/p/freight/runs/8" } }); }
     if (u.pathname === "/api/v1/projects/freight/runs/8") return out(200, ++polls < 2 ? { run: { number: 8, status: "running", tests: 2, url: "/p/freight/runs/8" } } : failedRun);
@@ -331,4 +333,32 @@ test("push forwards the design fields; gaps lead with behaviours", async () => {
   assert.match(g.split("\n")[0], /Test next: Delete a quote \(Quotes, delete, high\)/);
   assert.match(g, /Not proven: Search quotes \(Quotes, weak\)/);
   assert.match(g, /Not designed yet: Wishlist/);
+});
+
+test("an older install is told about the newer plugin, with what to run; the same or a newer one says nothing", () => {
+  assert.equal(newer("0.7.10", "0.7.9"), true);
+  assert.equal(newer("0.8.0", "0.7.12"), true);
+  assert.equal(newer("0.7.2", "0.7.2"), false);
+  assert.equal(newer("0.7.1", "0.7.2"), false);
+  assert.equal(newer("garbage", "0.7.2"), false);
+  assert.match(updateNote("0.7.3", "0.7.2"), /0\.7\.2 → 0\.7\.3[\s\S]*claude plugin marketplace update qahub[\s\S]*Enable auto-update/);
+  assert.equal(updateNote("0.7.2", "0.7.2"), "");
+  assert.equal(updateNote(null, "0.7.2"), "");
+});
+
+test("a file a test uploads: a picture goes as its bytes, a CSV as text; pulled back byte for byte", async () => {
+  fs.mkdirSync(path.join(app, "tests/fixtures"), { recursive: true });
+  fs.writeFileSync(path.join(app, "tests/fixtures/photo.png"), PNG);
+  fs.writeFileSync(path.join(app, "tests/fixtures/people.csv"), "name,email\nAcme,ops@acme.test\n");
+  assert.deepEqual(readAppFile(app, "tests/fixtures/photo.png"), { path: "tests/fixtures/photo.png", base64: PNG.toString("base64") });
+  assert.deepEqual(readAppFile(app, "tests/fixtures/people.csv"), { path: "tests/fixtures/people.csv", content: "name,email\nAcme,ops@acme.test\n" });
+  fs.writeFileSync(path.join(app, "tests/fixtures/big.zip"), Buffer.alloc(10 * 1024 * 1024 + 1));
+  assert.throws(() => readAppFile(app, "tests/fixtures/big.zip"), /over 10 MB/);
+  fs.rmSync(path.join(app, "tests/fixtures/big.zip"));
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  fs.rmSync(path.join(app, "tests/fixtures/robot.png"), { force: true });
+  assert.match(await t.qahub_pull({}), /Added:[^\n]*tests\/fixtures\/robot\.png/);
+  assert.deepEqual(fs.readFileSync(path.join(app, "tests/fixtures/robot.png")), PNG);
+  assert.doesNotMatch(await t.qahub_pull({}), /robot\.png/, "the same bytes: nothing to say");
 });

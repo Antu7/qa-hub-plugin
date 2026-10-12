@@ -4,7 +4,7 @@
 // Never prints the key. Never blocks the session: QA Hub being down must not stop someone coding.
 import fs from "node:fs";
 import path from "node:path";
-import { client } from "../server/qahub.mjs";
+import { client, publishedVersion, updateNote } from "../server/qahub.mjs";
 import { appRoot } from "../server/index.mjs";
 
 // The session's folder comes on stdin (Claude Code's hook input); give up waiting after a moment.
@@ -15,6 +15,7 @@ const input = await new Promise((ok) => {
 
 const qa = client({ key: process.env.CLAUDE_PLUGIN_OPTION_API_KEY, server: process.env.CLAUDE_PLUGIN_OPTION_SERVER || "http://localhost:3100" });
 let text;
+const latest = publishedVersion(); // in parallel with the key check; at most 2 s
 try {
   const me = await qa.whoami({ fresh: true });
   text = `QA Hub plugin: connected as ${me.user?.name ?? "?"} (${me.company?.name ?? "?"}), plan active until ${me.company?.expiresAt?.slice(0, 10) ?? "?"}. ${me.computer ? `Their computer (${me.computer.name}) is connected, so qahub_run can run tests.` : "Their computer isn't connected to QA Hub yet, so tests can be sent but not run."} When you build or change a feature, write Playwright tests for it, send them and run them with the qahub tools (see the qahub:write-tests skill).`;
@@ -28,4 +29,5 @@ try {
 } catch (e) {
   text = `QA Hub plugin: NOT connected — ${e.message} Until this is fixed, don't call the qahub tools; tell the user once what to do.`;
 }
+text += updateNote(await latest);
 process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }));
