@@ -1,6 +1,6 @@
 {
   "name": "qahub",
-  "version": "0.7.15",
+  "version": "0.7.16",
   "description": "Claude writes Playwright tests while it builds your app and sends them to QA Hub. Needs a QA Hub API key.",
   "author": { "name": "QA Hub" },
   "userConfig": {

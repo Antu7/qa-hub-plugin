@@ -699,3 +699,44 @@ test("qahub_schedule: lists scheduled runs in words; creates one in the person's
   await assert.rejects(t.qahub_schedule({ action: "delete", name: "Nope" }), /No schedule called/);
   await assert.rejects(t.qahub_schedule({ action: "create", name: "x", tag: "smoke" }), /time/);
 });
+
+test("you changed what a test uses (plan auto-heal Phase 1): an edit that removes words tests still look for says which lines, and Claude can't finish while they still do", async () => {
+  const { removedWords, uiChange, staleCheck } = await import("../hooks/ui-change.mjs");
+  // The words an edit takes out of the app: text, labels, test ids — not ones it keeps or only moves.
+  assert.deepEqual(removedWords(`<button aria-label="Save quote" data-testid="save">Save</button>`, `<button aria-label="Store quote" data-testid="save">Store</button>`).sort(), ["Save", "Save quote"]);
+  assert.deepEqual(removedWords(`{ "save": "Save", "cancel": "Cancel" }`, `{ "save": "Store", "cancel": "Cancel" }`), ["Save"], "a translation file too");
+  assert.deepEqual(removedWords(`const a = "Save";`, `const b = 1;\nconst a = "Save";`), [], "moved, not removed");
+  assert.deepEqual(removedWords(`x("a", "/api/v1", 42)`, `x()`), [], "not words a person reads");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-ui-"));
+  fs.writeFileSync(path.join(root, "qahub.json"), JSON.stringify({ project: "freight" }));
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.mkdirSync(path.join(root, "tests/pages"), { recursive: true });
+  fs.mkdirSync(path.join(root, "node_modules/x"), { recursive: true });
+  fs.writeFileSync(path.join(root, "src/QuoteForm.tsx"), `export const F = () => <button aria-label="Store quote">Store</button>;\n`);
+  fs.writeFileSync(path.join(root, "tests/pages/quote.ts"), `export class QuotePage {\n  constructor(page) { this.page = page; }\n  save = () => this.page.getByRole("button", { name: "Save quote" });\n}\n`);
+  fs.writeFileSync(path.join(root, "tests/quotes.spec.ts"), `test("Save a quote", async ({ page }) => {\n  await page.getByText('Save').click();\n});\n`);
+  fs.writeFileSync(path.join(root, "node_modules/x/a.spec.js"), `"Save quote"`);
+  const state = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-uist-")), "s.json");
+  const edit = { cwd: root, tool_name: "Edit", tool_input: { file_path: path.join(root, "src/QuoteForm.tsx"), old_string: `<button aria-label="Save quote">Save</button>`, new_string: `<button aria-label="Store quote">Store</button>` } };
+
+  const out = uiChange(edit, state);
+  const said = out.hookSpecificOutput.additionalContext;
+  assert.match(said, /“Save quote”[\s\S]*tests\/pages\/quote\.ts:3/);
+  assert.match(said, /“Save”[\s\S]*tests\/quotes\.spec\.ts:2/);
+  assert.doesNotMatch(said, /node_modules/);
+  assert.match(said, /qahub_run/);
+  // A test file's own edit, or an app file outside a QA Hub folder, says nothing.
+  assert.equal(uiChange({ ...edit, tool_input: { ...edit.tool_input, file_path: path.join(root, "tests/quotes.spec.ts") } }, state), null);
+  assert.equal(uiChange({ ...edit, cwd: os.tmpdir(), tool_input: { ...edit.tool_input, file_path: path.join(os.tmpdir(), "src.tsx") } }, path.join(os.tmpdir(), "nope.json")), null);
+
+  // About to stop while a test still says "Save": sent back once, naming the lines.
+  const stop = staleCheck({ cwd: root, stop_hook_active: false }, state);
+  assert.equal(stop.decision, "block");
+  assert.match(stop.reason, /tests\/pages\/quote\.ts:3[\s\S]*one line/);
+  assert.equal(staleCheck({ cwd: root, stop_hook_active: true }, state), null, "never loops");
+  // Updated: nothing left to say.
+  fs.writeFileSync(path.join(root, "tests/pages/quote.ts"), `save = () => this.page.getByRole("button", { name: "Store quote" });\n`);
+  fs.writeFileSync(path.join(root, "tests/quotes.spec.ts"), `await page.getByText('Store').click();\n`);
+  assert.equal(staleCheck({ cwd: root, stop_hook_active: false }, state), null);
+});
