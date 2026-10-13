@@ -44,6 +44,20 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/build-check.mjs"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

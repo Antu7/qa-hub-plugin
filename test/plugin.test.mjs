@@ -13,6 +13,7 @@ import { appRoot, describeProject, describeRun, readAppFile, tools } from "../se
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
 const pushed = [];
+const scheduled = [];
 const planned = [];
 let planReview = false;
 const started = [];
@@ -59,6 +60,10 @@ const server = http.createServer((req, res) => {
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
       { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
+    if (u.pathname === "/api/v1/projects/freight/schedules" && req.method === "GET") return out(200, { schedules: [{ name: "Nightly", when: "Weekdays at 02:00 (Asia/Dhaka)", what: "Release check", where: "computer", enabled: true, nextAt: "2026-10-14T20:00:00.000Z", owner: "Ana", last: { status: "failed", detail: "Connect your computer first", run: null } }] });
+    if (u.pathname === "/api/v1/projects/freight/schedules" && req.method === "POST") { const body = JSON.parse(b); scheduled.push(body);
+      return body.action === "create" ? out(200, { name: body.name, when: "Every 4 hours from 08:00, weekdays (UTC)", what: "Tag smoke", nextAt: "2026-10-14T08:00:00.000Z" })
+        : body.name === "Nope" ? out(404, { error: { code: "not_found", message: "No schedule called “Nope” in this project" } }) : out(200, { ok: true }); }
     if (u.pathname === "/api/v1/projects/freight/look" && req.method === "POST") { const body = JSON.parse(b); return body.path === "/broken"
       ? out(200, { status: "failed", error: "Couldn't open /broken. Is your app running?" })
       : out(200, { status: "done", look: { url: `http://localhost:5174${body.path}`, title: "Quotes", snapshot: '- heading "Quotes" [level=1]\n- button "New quote"', shot: PNG.toString("base64"), errors: ["TypeError: x is undefined"] } }); }
@@ -157,7 +162,7 @@ test("speaks MCP over stdio: initialize, list the tools, call one", async () => 
   assert.equal((await answer(1)).result.serverInfo.name, "qahub");
   ask({ method: "notifications/initialized" });
   ask({ id: 2, method: "tools/list" });
-  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look"]);
+  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look", "qahub_schedule"]);
   ask({ id: 3, method: "tools/call", params: { name: "qahub_status", arguments: {} } });
   assert.match((await answer(3)).result.content[0].text, /Connected to QA Hub/);
   } finally { child.kill(); }
@@ -296,7 +301,8 @@ test("qahub_pull: brings the team's latest test files; never overwrites a local 
 test("qahub_project shows each test's steps and who made it; push carries distinctFrom and remove", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
-  assert.match(await t.qahub_project({}), /TEST-00002 “Sign in” \(tests\/login\.spec\.ts\) — needs TEST-00004 — recorded by Maya\n    Sign in/);
+  assert.match(await t.qahub_project({}), /TEST-00002 “Sign in” \(tests\/login\.spec\.ts\) — needs TEST-00004 — recorded by Maya/);
+  assert.match(await t.qahub_project({ module: "Log in" }), /TEST-00002 “Sign in” \(tests\/login\.spec\.ts\) — needs TEST-00004 — recorded by Maya\n    Sign in/);
   await t.qahub_push({ files: ["tests/quotes.spec.ts"], remove: ["TEST-00009"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a draft quote", module: "Quotes", steps: ["Save draft"], distinctFrom: ["TEST-00004"] }] });
   assert.deepEqual(pushed.at(-1).remove, ["TEST-00009"]);
   assert.deepEqual(pushed.at(-1).tests[0].distinctFrom, ["TEST-00004"]);
@@ -615,7 +621,7 @@ test("run each test 5× to check for flaky ones; a push that removes checks carr
 
 test("the project shows each test's data as QA Hub holds it now — and which values change every run", () => {
   const said = describeProject({ name: "EHS", slug: "ehs", environments: [], sets: [], tags: [], folders: [], helpers: [], modules: [{ name: "Training", path: "/training", tests: 1 }], tests: [{ ref: "TEST-00044", title: "Create a course", file: "e2e/course.spec.ts", module: "Training", steps: ["Open"],
-    data: [{ name: "course_title", value: "Fire safety", varies: true }, { name: "seats", value: "30" }] }] });
+    data: [{ name: "course_title", value: "Fire safety", varies: true }, { name: "seats", value: "30" }] }] }, "Training");
   assert.match(said, /data: course_title \(different every run\), seats = “30”/);
 });
 
@@ -635,4 +641,61 @@ test("qahub_look: Claude reads a page before writing a test for it — its contr
   assert.match(text, /The app's own errors on this page: TypeError: x is undefined/);
   assert.deepEqual(got.content.find((c) => c.type === "image"), { type: "image", data: PNG.toString("base64"), mimeType: "image/jpeg" });
   await assert.rejects(t.qahub_look({ path: "/broken" }), /Couldn't open \/broken/);
+});
+
+test("qahub_project is light by default — each test on one line; one module's steps and data on request", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  const all = await t.qahub_project({});
+  assert.match(all, /TEST-00004 “Save a quote”/);
+  assert.doesNotMatch(all, /Open Quotes → Save it/);
+  assert.match(all, /qahub_project \{ module \}/);
+  const one = await t.qahub_project({ module: "quotes" });
+  assert.match(one, /TEST-00004 “Save a quote”[\s\S]*Open Quotes → Save it/);
+  assert.doesNotMatch(one, /TEST-00002 “Sign in”/);
+  await assert.rejects(t.qahub_project({ module: "Nowhere" }), /No module “Nowhere”[\s\S]*Quotes/);
+});
+
+test("the checklist has one home: the write-tests skill — the hook hands over that very text", async () => {
+  const { CHECKLIST } = await import("../hooks/test-checklist.mjs");
+  const skill = fs.readFileSync(path.join(HERE, "../skills/write-tests/SKILL.md"), "utf8");
+  assert.ok(CHECKLIST.length > 500 && CHECKLIST.length < 2500, String(CHECKLIST.length));
+  assert.ok(skill.includes(CHECKLIST.split("\n").slice(1).join("\n")), "the hook's text is the skill's checklist section");
+  assert.equal(skill.split("Tests start signed in").length - 1, 1, "and the rule is written once");
+});
+
+test("after building: app code changed and nothing pushed — Claude is sent back once to write tests (or say why not)", async () => {
+  const { buildCheck } = await import("../hooks/build-check.mjs");
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  const line = (o) => JSON.stringify(o);
+  const edit = (file) => line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(app, file) } }] } });
+  const push = line({ type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__plugin_qahub_qahub__qahub_push", input: {} }] } });
+  const seen = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-seen-")), "s");
+  const input = { cwd: app, session_id: "s1", stop_hook_active: false };
+
+  const out = buildCheck(input, [edit("src/quotes/QuoteForm.tsx"), edit("README.md")].join("\n"), seen);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /src\/quotes\/QuoteForm\.tsx[\s\S]*qahub:write-tests[\s\S]*one line/);
+  assert.doesNotMatch(out.reason, /README/);
+  assert.equal(buildCheck(input, edit("src/a.ts"), seen), null, "once per session");
+
+  const fresh = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-seen-")), "s");
+  assert.equal(buildCheck(input, [edit("src/a.ts"), push].join("\n"), fresh()), null, "tests were pushed after the change");
+  assert.equal(buildCheck(input, [edit("tests/quotes.spec.ts"), edit("docs/plan.md"), edit("package-lock.json")].join("\n"), fresh()), null, "only tests, docs, lock files");
+  assert.equal(buildCheck({ ...input, stop_hook_active: true }, edit("src/a.ts"), fresh()), null, "never loops");
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-unlinked-"));
+  assert.equal(buildCheck({ ...input, cwd: other }, line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(other, "src/a.ts") } }] } }), fresh()), null, "only in a folder linked to QA Hub");
+});
+
+test("qahub_schedule: lists scheduled runs in words; creates one in the person's own time zone; on/off/delete by name", async () => {
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  const t = as("qh_good");
+  assert.match(await t.qahub_schedule({ action: "list" }), /Nightly — Weekdays at 02:00 \(Asia\/Dhaka\) · Release check · on[\s\S]*last time it didn't start: Connect your computer first/);
+  const made = await t.qahub_schedule({ action: "create", name: "Smoke every 4h", tag: "smoke", days: ["mon", "tue", "wed", "thu", "fri"], time: "08:00", everyHours: 4, where: "server" });
+  assert.match(made, /Scheduled “Smoke every 4h”: Every 4 hours from 08:00, weekdays \(UTC\)/);
+  assert.equal(scheduled.at(-1).timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+  assert.equal(scheduled.at(-1).tag, "smoke");
+  assert.match(await t.qahub_schedule({ action: "off", name: "Smoke every 4h" }), /off/);
+  await assert.rejects(t.qahub_schedule({ action: "delete", name: "Nope" }), /No schedule called/);
+  await assert.rejects(t.qahub_schedule({ action: "create", name: "x", tag: "smoke" }), /time/);
 });

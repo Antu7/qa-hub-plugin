@@ -94,8 +94,8 @@ export const TOOLS = [
   },
   {
     name: "qahub_project",
-    description: "The project's structure in QA Hub — read it before writing tests: the module tree (each module's address and how many tests it has), the hand-picked sets, every test (ref, title, module, tags, file, what it protects), the tags in use, the spec folders and the shared helper files. Put each new test in the module for the part of the app it covers; reuse the helpers; don't write a test that already exists.",
-    inputSchema: { type: "object", properties: { project: { type: "string", description: "Leave out to use the linked project" } }, additionalProperties: false },
+    description: "The project's structure in QA Hub — read it before writing tests: the module tree (each module's address and how many tests it has), the hand-picked sets, every test on one line (ref, title, module, tags, file, what it protects), the tags in use, the spec folders and the shared helper files. With module: that module's tests in full — steps, test data, whether each counts yet. Put each new test in the module for the part of the app it covers; reuse the helpers; don't write a test that already exists.",
+    inputSchema: { type: "object", properties: { module: { type: "string", description: "A module's name or address: its tests with their steps and test data" }, project: { type: "string", description: "Leave out to use the linked project" } }, additionalProperties: false },
   },
   {
     name: "qahub_design",
@@ -254,6 +254,26 @@ export const TOOLS = [
       },
     },
   },
+  {
+    name: "qahub_schedule",
+    description: "Scheduled runs: QA Hub starts a run by itself — on these days at a time, every few hours, or monthly — as the person, on their computer (it must be on then) or on QA Hub's test computers (where: \"server\"). action list: what's scheduled and how it last went. create: name + what to run (one of set, tag, module, tests) + when (time, and days / everyHours / monthDay); the person's own time zone is used. on / off / delete: by name. Create one only when the person asks for it.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["action"],
+      properties: {
+        action: { type: "string", enum: ["list", "create", "on", "off", "delete"] },
+        name: { type: "string", maxLength: 80, description: "The schedule's name (unique in the project)" },
+        set: { type: "string", description: "A set's name" }, tag: { type: "string" }, module: { type: "string" },
+        tests: { type: "array", items: { type: "string" }, description: "Test refs, e.g. [\"TEST-00012\"]" },
+        time: { type: "string", description: "HH:MM, 24-hour — the time, or the start time for everyHours" },
+        days: { type: "array", items: { type: "string", enum: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }, description: "Leave out for every day" },
+        everyHours: { type: "integer", enum: [1, 2, 3, 4, 6, 8, 12], description: "Repeat every N hours from time until midnight, on those days" },
+        monthDay: { type: "integer", minimum: -1, maximum: 31, description: "Monthly on this day (-1 = the last day) instead of days" },
+        environment: { type: "string" }, browser: { type: "string", enum: ["chrome", "firefox", "webkit", "edge"] },
+        where: { type: "string", enum: ["computer", "server"], description: "computer (default): the person's own; server: QA Hub's test computers" },
+        project: { type: "string", description: "Leave out to use the linked project" },
+      },
+    },
+  },
 ];
 
 const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)",
@@ -285,8 +305,13 @@ export function describeRun(run, origin) {
   return lines.join("\n");
 }
 
-/** The project's structure, as Claude reads it: modules as a tree, sets, tags, files, tests by module. */
-export function describeProject(s) {
+/**
+ * The project's structure, as Claude reads it: modules as a tree, sets, tags, files, tests by module — each test on
+ * one line, so it stays cheap to read on every task. With `module`: only that module's tests, in full.
+ */
+export function describeProject(s, module) {
+  const want = module ? s.modules.find((m) => m.name.toLowerCase() === String(module).trim().toLowerCase() || m.path === String(module).trim()) : null;
+  if (module && !want) throw new QaHubError(`No module “${module}” in this project. Modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}.`);
   const kids = (parent) => s.modules.filter((m) => (m.parent ?? null) === parent);
   const tree = [];
   const walk = (parent, depth) => { for (const m of kids(parent)) { tree.push(`${"  ".repeat(depth)}- ${m.name} (${m.path}) — ${m.tests ? `${m.tests} test${m.tests === 1 ? "" : "s"}` : "no tests yet"}`); if (depth < 6) walk(m.path, depth + 1); } };
@@ -294,7 +319,7 @@ export function describeProject(s) {
   // A module whose parent isn't in the list still shows (at the top).
   for (const m of s.modules) if (m.parent && !s.modules.some((x) => x.path === m.parent)) tree.push(`- ${m.name} (${m.path}) — ${m.tests} test(s)`);
   const byModule = new Map();
-  for (const t of s.tests) byModule.set(t.module, [...(byModule.get(t.module) ?? []), t]);
+  for (const t of s.tests) if (!want || t.module === want.name) byModule.set(t.module, [...(byModule.get(t.module) ?? []), t]);
   const MAX = 300;
   const list = [];
   let shown = 0;
@@ -303,13 +328,16 @@ export function describeProject(s) {
     for (const t of ts) {
       if (shown++ >= MAX) break;
       list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
+      if (!want) continue; // steps and data: one module at a time
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
       // Its test data (QAHUB_DATA) as QA Hub holds it: a person may have changed a value, or made it vary each run.
       if (t.verified === false) list.push(`    not counted yet: passed ${t.passes ?? 0} of 2 times since its code changed — run it (repeat: 2)`);
       if (t.data?.length) list.push(`    data: ${t.data.map((d) => (d.varies ? `${d.name} (different every run)` : `${d.name} = “${d.value}”`)).join(", ")}`);
     }
   }
-  if (s.tests.length > MAX) list.push(`…and ${s.tests.length - MAX} more (${s.tests.length} tests in all).`);
+  const total = [...byModule.values()].reduce((n, x) => n + x.length, 0);
+  if (total > MAX) list.push(`…and ${total - MAX} more (${total} tests in all).`);
+  if (!want) list.push("Each test's steps and test data, one module at a time: qahub_project { module }.");
   return [
     `Project ${s.slug}${s.name ? ` (${s.name})` : ""}.`,
     `Modules (the app's areas, in its menu order — a test belongs to the one for the page it covers):\n${tree.join("\n") || "none yet"}`,
@@ -388,10 +416,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         ...(summary ? [`Environments: ${summary.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}. Tests in QA Hub: ${summary.tests.length}.`] : []),
       ].join("\n");
     },
-    async qahub_project({ project } = {}) {
+    async qahub_project({ project, module } = {}) {
       await qa.whoami();
       const p = projectOf(project);
-      return describeProject(await qa.call("GET", `/api/v1/projects/${p}`));
+      return describeProject(await qa.call("GET", `/api/v1/projects/${p}`), module);
     },
     async qahub_design({ module, project } = {}) {
       await qa.whoami();
@@ -546,6 +574,22 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         if (f.screenshot) content.push({ type: "image", data: f.screenshot.base64, mimeType: f.screenshot.type });
       }
       return { content };
+    },
+    async qahub_schedule({ project, action, ...rest } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      if (action === "list") {
+        const { schedules } = await qa.call("GET", `/api/v1/projects/${p}/schedules`);
+        if (!schedules.length) return "Nothing is scheduled in this project.";
+        return schedules.map((s) => `- ${s.name} — ${s.when} · ${s.what} · ${s.enabled ? "on" : "off"}${s.where === "server" ? " · on QA Hub's test computers" : ` · on ${s.owner}'s computer`}${s.enabled && s.nextAt ? ` · next ${s.nextLocal ?? s.nextAt}` : ""}${s.last ? ` · last time ${s.last.status === "started" ? `it ran (run #${s.last.run})` : s.last.status === "missed" ? "it was missed" : `it didn't start: ${s.last.detail}`}` : ""}`).join("\n");
+      }
+      if (action === "create") {
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(rest.time ?? ""))) throw new QaHubError("Say the time as HH:MM (24-hour), e.g. time: \"02:00\".");
+        const made = await qa.call("POST", `/api/v1/projects/${p}/schedules`, { action, ...rest, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+        return `Scheduled “${made.name}”: ${made.when} · ${made.what}. Next run ${made.nextLocal ?? made.nextAt}. It runs as the person${rest.where === "server" ? " on QA Hub's test computers" : " on their computer, which has to be on and connected then"}; if a run can't start, QA Hub's bell says why.`;
+      }
+      await qa.call("POST", `/api/v1/projects/${p}/schedules`, { action, name: rest.name });
+      return action === "delete" ? `Deleted the schedule “${rest.name}”. Runs it made stay in Results.` : `“${rest.name}” is ${action === "on" ? "on" : "off"}.`;
     },
     async qahub_look({ project, path, environment } = {}) {
       await qa.whoami();
