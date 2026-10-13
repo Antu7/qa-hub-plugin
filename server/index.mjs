@@ -242,6 +242,18 @@ export const TOOLS = [
       },
     },
   },
+  {
+    name: "qahub_look",
+    description: "Before writing a test for a page: open it in the app — on the person's computer, signed in, at the project's address — and read what is really there: every control with its role and name (exactly what getByRole/getByLabel need), where it landed (a sign-in page means the session didn't hold), the app's own errors, and a picture. Opened and read, never clicked. Use it for every page a test touches, with or without the app's code.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["path"],
+      properties: {
+        path: { type: "string", description: "The page's path in the app, e.g. /quotes or /quotes/new?tab=items" },
+        environment: { type: "string", description: "An environment's name; leave out for the project's first one" },
+        project: { type: "string", description: "Leave out to use the linked project" },
+      },
+    },
+  },
 ];
 
 const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)",
@@ -266,6 +278,7 @@ export function describeRun(run, origin) {
   for (const f of run.failures ?? []) {
     lines.push(`- ${f.ref ?? "(deleted test)"} “${f.title}”${f.file ? ` (${f.file})` : ""} failed${f.failedStep ? ` at “${f.failedStep}”` : ""}${f.kind && KIND[f.kind] ? ` — ${KIND[f.kind]}` : ""}${f.since ? `; ${f.since}` : ""}.\n  ${f.error ?? "No error text."}${f.evidence?.length ? `\n  The app said: ${f.evidence.slice(0, 2).join(" | ")}` : ""}${whereItFailed(f.context, f.values)}`);
   }
+  if (run.notRun?.length) lines.push(`Didn't run: ${run.notRun.slice(0, 20).map((x) => `${x.ref ?? "(deleted test)"} “${x.title}”${x.reason ? ` (${x.reason})` : ""}`).join("; ")}${run.notRun.length > 20 ? "; …" : ""}.`);
   if (run.flaky?.length) lines.push(`Flaky: ${run.flaky.map((x) => `${x.ref} “${x.title}”`).join(", ")} — passed only on the second try; find what makes it unreliable (a wait for the wrong thing, data left by an earlier test).`);
   if (run.failed) lines.push("Next: for each failure decide whether the app is wrong (fix the app) or the test no longer matches the app (fix the test). Never make it pass by checking less or waiting longer. Then push and run again. The screenshot, video and trace are on the run page.");
   else if (run.skipped) lines.push("Skipped tests didn't run — usually because a test before them failed, or they have no recorded steps or stored file.");
@@ -292,6 +305,7 @@ export function describeProject(s) {
       list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
       // Its test data (QAHUB_DATA) as QA Hub holds it: a person may have changed a value, or made it vary each run.
+      if (t.verified === false) list.push(`    not counted yet: passed ${t.passes ?? 0} of 2 times since its code changed — run it (repeat: 2)`);
       if (t.data?.length) list.push(`    data: ${t.data.map((d) => (d.varies ? `${d.name} (different every run)` : `${d.name} = “${d.value}”`)).join(", ")}`);
     }
   }
@@ -389,10 +403,12 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.whoami();
       const p = projectOf(project);
       const res = await qa.call("POST", `/api/v1/projects/${p}/plan`, { ...(behaviours.length ? { behaviours } : {}), tests });
-      const n = res.planned.length;
+      // Each test case's stage says whether it waits for a person (high-priority and risky ones, by default).
+      const waiting = res.planned.filter((x) => x.stage === "planned").length;
+      const ready = res.planned.length - waiting;
       const lines = [];
-      if (res.review && n) lines.push(`${n} test case${n === 1 ? "" : "s"} planned — waiting for review in QA Hub: ${qa.origin()}/p/${p}/tests. A person approves, asks for changes or rejects each one. Tell the user, and stop here for these tests: code for an unapproved plan is refused. Their answers show in qahub_gaps (changeRequests).`);
-      else if (n) lines.push(`${n} test case${n === 1 ? "" : "s"} planned and approved — write ${n === 1 ? "its" : "their"} code now: each test("…") named exactly as planned, its test.step names equal to the planned steps.`);
+      if (waiting) lines.push(`${waiting} test case${waiting === 1 ? "" : "s"} waiting for a person to approve in QA Hub: ${qa.origin()}/p/${p}/tests — they decide what “correct” is. Tell the user, and stop here for those tests: code for an unapproved plan is refused. Their answers show in qahub_gaps (changeRequests).`);
+      if (ready) lines.push(`${ready} test case${ready === 1 ? "" : "s"} approved — write ${ready === 1 ? "its" : "their"} code now: each test("…") named exactly as planned, its test.step names equal to the planned steps.`);
       for (const x of res.planned) lines.push(`- ${x.ref} “${x.title}” in ${x.module} (${x.stage})`);
       // Already a test (it has code): its design was updated, not a new test — change ITS code and push it.
       if (res.updated?.length) lines.push(`Already tests — their test cases were updated, no new ones made. Change their code to match and qahub_push it (same file, same title):`);
@@ -531,6 +547,22 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       }
       return { content };
     },
+    async qahub_look({ project, path, environment } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      const r = await qa.call("POST", `/api/v1/projects/${p}/look`, { path, ...(environment ? { environment } : {}) }, { timeout: SLOW });
+      if (r.status === "failed") throw new QaHubError(r.error ?? "Couldn't open the page");
+      if (r.status !== "done") return `${path} is still opening on the person's computer — call qahub_look again in a moment.`;
+      const l = r.look;
+      const content = [{ type: "text", text: [
+        `${l.url}${l.title ? ` — “${l.title}”` : ""}`,
+        "What's on the page (role and name of each control — find elements by these):",
+        l.snapshot,
+        l.errors?.length ? `The app's own errors on this page: ${l.errors.join(" | ")}` : "",
+      ].filter(Boolean).join("\n") }];
+      if (l.shot) content.push({ type: "image", data: l.shot, mimeType: "image/jpeg" });
+      return { content };
+    },
     async qahub_fix_note({ project, test, kind, note } = {}) {
       await qa.whoami();
       const p = projectOf(project);
@@ -562,7 +594,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
         ...(res?.modules?.added?.length ? [`Modules added: ${res.modules.added.map((m) => `${m.name} (${m.path})`).join(", ")}.`] : []),
         ...(res?.modules?.named ?? []).map((m) => `QA Hub calls ${m.path} “${m.qahub}” (you said “${m.yours}”) — use “${m.qahub}” from now on.`),
-        ...(refs.length ? [`Tests: ${refs.map((r) => `${r.ref} “${r.title}”${r.module ? ` in ${r.module}` : ""}`).join(", ")}.`, `Run them now: qahub_run { tests: ${JSON.stringify(refs.map((r) => r.ref))} }`] : []),
+        ...(refs.length ? [`Tests: ${refs.map((r) => `${r.ref} “${r.title}”${r.module ? ` in ${r.module}` : ""}`).join(", ")}.`, `Run them now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(refs.map((r) => r.ref))}, repeat: 2 }`] : []),
         ...refs.filter((r) => r.note).map((r) => `${r.ref}: ${r.note}.`),
         ...(res?.inbox?.length ? [`In Inbox (no module): ${res.inbox.join("; ")}.`] : []),
         ...(res?.removed?.length ? [`Moved to QA Hub's recycle bin: ${res.removed.join(", ")}.`] : []),

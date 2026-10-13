@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
-import { appRoot, describeProject, readAppFile, tools } from "../server/index.mjs";
+import { appRoot, describeProject, describeRun, readAppFile, tools } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
@@ -59,6 +59,9 @@ const server = http.createServer((req, res) => {
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
       { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
+    if (u.pathname === "/api/v1/projects/freight/look" && req.method === "POST") { const body = JSON.parse(b); return body.path === "/broken"
+      ? out(200, { status: "failed", error: "Couldn't open /broken. Is your app running?" })
+      : out(200, { status: "done", look: { url: `http://localhost:5174${body.path}`, title: "Quotes", snapshot: '- heading "Quotes" [level=1]\n- button "New quote"', shot: PNG.toString("base64"), errors: ["TypeError: x is undefined"] } }); }
     if (u.pathname === "/api/v1/projects/freight/fixes") return out(200, { fixes: [{ ref: "TEST-00005", title: "Cancelling Create training saves nothing", file: "tests/training.spec.ts", steps: ["Open Create training, type a title and press Cancel", "Open Create training again"],
       run: 8, askedBy: "Alex", step: 1, stepTitle: "Open Create training again", attempt: 1, failKind: null, url: "/p/freight/runs/8",
       plain: "The “Title” box in the “Create training” dialog should have been empty, but it still said “QA Cancel 1”.", technical: "expect(locator).toHaveValue(expected) failed",
@@ -113,7 +116,7 @@ test("a valid key: status, link, gaps and push work — and the link file holds 
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(app, "qahub.json"), "utf8")), { project: "freight" });
   assert.match(await t.qahub_gaps({}), /Quotes/);
   const sent = await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
-  assert.match(sent, /TEST-00004 “Save a quote”[\s\S]*qahub_run \{ tests: \["TEST-00004"\] \}/);
+  assert.match(sent, /TEST-00004 “Save a quote”[\s\S]*qahub_run \{ tests: \["TEST-00004"\], repeat: 2 \}/);
   assert.equal(pushed.at(-1).files[0].path, "tests/quotes.spec.ts");
   assert.match(pushed.at(-1).files[0].content, /playwright/);
 });
@@ -154,7 +157,7 @@ test("speaks MCP over stdio: initialize, list the tools, call one", async () => 
   assert.equal((await answer(1)).result.serverInfo.name, "qahub");
   ask({ method: "notifications/initialized" });
   ask({ id: 2, method: "tools/list" });
-  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note"]);
+  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look"]);
   ask({ id: 3, method: "tools/call", params: { name: "qahub_status", arguments: {} } });
   assert.match((await answer(3)).result.content[0].text, /Connected to QA Hub/);
   } finally { child.kill(); }
@@ -331,11 +334,11 @@ test("qahub_plan: test cases before code; says whether a person reviews them; re
       steps: [{ title: "Delete it", expect: "A confirmation shows" }, { title: "Search for it", expect: "It isn't found" }] }] };
   let said = await t.qahub_plan(plan);
   assert.deepEqual(planned.at(-1), plan);
-  assert.match(said, /1 test case planned and approved[\s\S]*write its code/);
+  assert.match(said, /1 test case approved[\s\S]*write its code/);
   assert.match(said, /“Archive a quote” was dropped by a person/);
   planReview = true;
   said = await t.qahub_plan(plan);
-  assert.match(said, /waiting for review in QA Hub[\s\S]*\/p\/freight\/tests/);
+  assert.match(said, /waiting for a person to approve in QA Hub[\s\S]*\/p\/freight\/tests/);
   assert.match(said, /stop here/i);
   planReview = false;
 });
@@ -616,3 +619,20 @@ test("the project shows each test's data as QA Hub holds it now — and which va
   assert.match(said, /data: course_title \(different every run\), seats = “30”/);
 });
 
+
+test("a run names the tests that didn't run and why — not just a count", () => {
+  const text = describeRun({ number: 9, status: "finished", verdict: "fail", passed: 1, failed: 0, skipped: 2, url: "/p/x/runs/9", failures: [],
+    notRun: [{ ref: "TEST-00004", title: "Delete the order", reason: "Skipped — TEST-00003 failed first" }, { ref: "TEST-00005", title: "Print the order", reason: null }] }, "https://qa.test");
+  assert.match(text, /Didn't run: TEST-00004 “Delete the order” \(Skipped — TEST-00003 failed first\); TEST-00005 “Print the order”/);
+});
+
+test("qahub_look: Claude reads a page before writing a test for it — its controls by role and name, the app's errors, and a picture", async () => {
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  const t = as("qh_good");
+  const got = await t.qahub_look({ path: "/quotes" });
+  const text = got.content.map((c) => c.text ?? "").join("\n");
+  assert.match(text, /\/quotes[\s\S]*button "New quote"/);
+  assert.match(text, /The app's own errors on this page: TypeError: x is undefined/);
+  assert.deepEqual(got.content.find((c) => c.type === "image"), { type: "image", data: PNG.toString("base64"), mimeType: "image/jpeg" });
+  await assert.rejects(t.qahub_look({ path: "/broken" }), /Couldn't open \/broken/);
+});
