@@ -7,7 +7,7 @@
     "api_key": {
       "type": "string",
       "title": "QA Hub API key",
-      "description": "From QA Hub → Plan & API keys. Claude Code keeps it as a secret setting (the system keychain on macOS), never in your project's files.",
+      "description": "From QA Hub → Account → API keys. Claude Code keeps it as a secret setting (the system keychain on macOS), never in your project's files.",
       "required": true,
       "sensitive": true
     },

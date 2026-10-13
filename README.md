@@ -19,7 +19,7 @@ Developing the plugin itself: `claude plugin marketplace add /path/to/this/folde
 
 Claude Code asks for:
 
-- **QA Hub API key** — from QA Hub → *Plan & API keys*. Claude Code keeps it as a secret setting (the system keychain on macOS), never in your project's files.
+- **QA Hub API key** — from QA Hub → *Account → API keys*. Claude Code keeps it as a secret setting (the system keychain on macOS), never in your project's files.
 - **QA Hub address** — the address you open QA Hub at (QA Hub's *Claude setup* card shows it). Leave the default for `https://app.qahub.dev`.
 
 Then, in your app's folder:

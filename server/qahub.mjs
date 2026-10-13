@@ -50,7 +50,7 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
   let base;
   const ready = () => {
     // A placeholder that was never filled in counts as no key.
-    if (!key || key.startsWith("${")) throw new QaHubError("No QA Hub API key yet. Run /plugin, open qahub and add your key (QA Hub → Plan & API keys).", "no_key");
+    if (!key || key.startsWith("${")) throw new QaHubError("No QA Hub API key yet. Run /plugin, open qahub and add your key (QA Hub → Account → API keys).", "no_key");
     if (/\s/.test(key) || key.length > 200) throw new QaHubError("The QA Hub API key in the plugin settings has spaces or line breaks in it — paste it again.", "no_key");
     return (base ??= serverUrl(String(server ?? "").trim() || DEFAULT_SERVER));
   };
