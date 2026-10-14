@@ -223,6 +223,7 @@ export const TOOLS = [
         browser: { type: "string", enum: ["chrome", "firefox", "webkit", "edge"] },
         show: { type: "boolean", description: "true opens a visible browser window on the person's computer (default: runs in the background)" },
         repeat: { type: "integer", minimum: 1, maximum: 10, description: "Run each test this many times in a row. A test with dynamic data (data linked to variables) gets NEW values on every try — repeat 5 tries 5 different inputs, and a failure shows the values that broke it (a bug that depends on the data, not a flaky test). Without dynamic data, 5 checks whether a test is flaky (\"Failed 2 of 5 times\")" },
+        parallel: { type: "integer", minimum: 1, maximum: 8, description: "How many tests run at once, each in its own tab (default 4). A test with needs still waits for that test; tests on a one-at-a-time account take turns. 1 only for tests that change the same data and can't run side by side" },
         where: { type: "string", enum: ["computer", "server"], description: "\"server\" runs it on QA Hub's own test computers (no computer of the person's needed; always headless; only for apps reachable from the internet). Default: the person's computer" },
         wait: { type: "boolean", description: "Wait for the result (default true, up to about 5 minutes); false returns the run number at once" },
       },
@@ -567,13 +568,13 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (b.notDesigned.length) lines.push(`Not designed yet: ${b.notDesigned.join(", ")} — qahub_design them and propose their behaviours.`);
       return [...lines, capped(g)].join("\n");
     },
-    async qahub_run({ project, tests, tag, module, set, environment, browser, show = false, wait = true, repeat, where } = {}) {
+    async qahub_run({ project, tests, tag, module, set, environment, browser, show = false, wait = true, repeat, parallel, where } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       // An empty list is a mistake, never "everything": that would run the whole project on their computer.
       if (Array.isArray(tests) && !tests.length) throw new QaHubError("No tests named (tests is empty), so nothing was run. Name the refs (qahub_push returns them), or pick a tag, module or set.");
       if ([tests?.length ? tests : null, tag, module, set].filter(Boolean).length > 1) throw new QaHubError("Pick tests by one of: tests, tag, module or set.");
-      const body = { ...(tests?.length ? { tests } : {}), ...(tag ? { tag } : {}), ...(module ? { module } : {}), ...(set ? { set } : {}), ...(environment ? { environment } : {}), ...(browser ? { browser } : {}), headless: where === "server" || !show, ...(repeat > 1 ? { repeat } : {}), ...(where === "server" ? { where } : {}) };
+      const body = { ...(tests?.length ? { tests } : {}), ...(tag ? { tag } : {}), ...(module ? { module } : {}), ...(set ? { set } : {}), ...(environment ? { environment } : {}), ...(browser ? { browser } : {}), headless: where === "server" || !show, ...(repeat > 1 ? { repeat } : {}), ...(parallel ? { parallel } : {}), ...(where === "server" ? { where } : {}) };
       const { run } = await qa.call("POST", `/api/v1/projects/${p}/runs/start`, body).catch((e) => {
         // Not connected (or an old qahub): what the person does about it, in one line Claude can relay.
         if (/Connect your computer/i.test(e.message)) throw new QaHubError(`${e.message} Tell the person once: in QA Hub → Computers, run the connect command it shows in a terminal on the computer where the app runs, and leave it open. Until then the tests are sent but not run.`);

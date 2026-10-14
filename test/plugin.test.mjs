@@ -217,6 +217,8 @@ test("qahub_run runs on the person's computer, waits, and says what failed, wher
   // Not waiting: it says the number to ask about.
   assert.match(await t.qahub_run({ tag: "smoke", wait: false, show: true }), /Run #8 started/);
   assert.deepEqual(started.at(-1), { tag: "smoke", headless: false });
+  await t.qahub_run({ tag: "smoke", wait: false, parallel: 8 });
+  assert.deepEqual(started.at(-1), { tag: "smoke", headless: true, parallel: 8 }, "how many at once goes along");
   await assert.rejects(t.qahub_run({ tag: "smoke", module: "Quotes" }), /one of/);
   await assert.rejects(t.qahub_run({ tag: "offline" }), /Connect your computer first[\s\S]*QA Hub → Computers[\s\S]*sent but not run/);
 });
