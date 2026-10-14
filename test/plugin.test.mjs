@@ -619,10 +619,39 @@ test("run each test 5× to check for flaky ones; a push that removes checks carr
   assert.deepEqual(pushed.at(-1).tests[0].data, [{ name: "customer_name", value: "Acme" }]);
 });
 
+test("qahub_push makes data dynamic: a value links to a variable, and new variables go along in the same push", async () => {
+  const t = as("qh_good");
+  const { TOOLS } = await import("../server/index.mjs");
+  const push = TOOLS.find((x) => x.name === "qahub_push");
+  assert.ok(push.inputSchema.properties.variables, "qahub_push takes variables");
+  assert.ok(push.inputSchema.properties.tests.items.properties.data.items.properties.variable, "a data value can name its variable");
+  const variables = [{ name: "customer_name", kind: "text", rules: { minLength: 2, maxLength: 40, letters: true, spaces: true }, tricky: "sometimes" }];
+  await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open quotes"], data: [{ name: "customer_name", value: "Acme", variable: "customer_name" }] }], variables });
+  assert.deepEqual(pushed.at(-1).tests[0].data, [{ name: "customer_name", value: "Acme", variable: "customer_name" }]);
+  assert.deepEqual(pushed.at(-1).variables, variables);
+});
+
 test("the project shows each test's data as QA Hub holds it now — and which values change every run", () => {
   const said = describeProject({ name: "EHS", slug: "ehs", environments: [], sets: [], tags: [], folders: [], helpers: [], modules: [{ name: "Training", path: "/training", tests: 1 }], tests: [{ ref: "TEST-00044", title: "Create a course", file: "e2e/course.spec.ts", module: "Training", steps: ["Open"],
     data: [{ name: "course_title", value: "Fire safety", varies: true }, { name: "seats", value: "30" }] }] }, "Training");
   assert.match(said, /data: course_title \(different every run\), seats = “30”/);
+});
+
+test("Claude sees the project's variables, which variable each value uses, a value a person fixed, and one-at-a-time accounts", () => {
+  const said = describeProject({ name: "EHS", slug: "ehs", environments: [], sets: [], tags: [], folders: [], helpers: [], modules: [{ name: "Training", path: "/training", tests: 1 }],
+    accounts: [{ name: "manager", role: null, places: ["Staging"], default: true, oneAtATime: true }],
+    variables: [
+      { name: "course_title", kind: "text", rules: { minLength: 3, maxLength: 60 }, tricky: true },
+      { name: "city", kind: "list", rules: {}, values: 12, sample: ["Oslo", "Lima"], pick: "round", tricky: false },
+    ],
+    tests: [{ ref: "TEST-00044", title: "Create a course", file: "e2e/course.spec.ts", module: "Training", steps: ["Open"],
+      data: [{ name: "title", value: "Fire safety", varies: true, variable: "course_title" }, { name: "seats", value: "30", fixedByPerson: true }] }] }, "Training");
+  assert.match(said, /Variables \(link a test's data to one/);
+  assert.match(said, /- course_title — text \(minLength 3, maxLength 60\) — sometimes an edge value/);
+  assert.match(said, /- city — list of 12 \(round, e\.g\. “Oslo”, “Lima”\)/);
+  assert.match(said, /data: title \(different every run: course_title\), seats = “30” \(fixed by a person — leave it\)/);
+  assert.match(said, /- manager — on Staging — default — one run at a time/);
+  assert.match(describeProject({ name: "E", slug: "e", environments: [], sets: [], tags: [], folders: [], helpers: [], modules: [], tests: [] }), /Variables \(.*\): none yet\./);
 });
 
 
