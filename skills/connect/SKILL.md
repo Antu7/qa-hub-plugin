@@ -6,7 +6,7 @@ description: Connect this app's folder to a QA Hub project, or check the QA Hub 
 # Connect to QA Hub
 
 1. Call `qahub_status`.
-   - **Key missing or not valid:** tell the user to make a new key in QA Hub → Account → API keys, then run the setup command shown on Account → Claude Code ("Paste this into your Terminal") again — it asks for the key and saves it. (Or `/plugin` → **qahub** → configure.) The key is kept in the system keychain; never ask them to paste it into the chat or a file.
+   - **Key missing or not valid:** tell the user to make a new key in QA Hub → Account → API keys, then run the setup command shown in the project's Settings → Claude ("Paste this into your Terminal") again — it asks for the key and saves it. (Or `/plugin` → **qahub** → configure.) The key is kept in the system keychain; never ask them to paste it into the chat or a file.
    - **Plan ended:** tell them to renew in QA Hub. Nothing else will work until then.
    - **Computer not connected:** tests can be sent but not run. Tell them to open QA Hub → Computers and run the connect command it shows, in a terminal on the computer where the app runs, and leave it open.
 2. If the user named a project (e.g. `/qahub:connect freight-portal`), call `qahub_link` with it. Otherwise show the projects from the status and ask which one.
