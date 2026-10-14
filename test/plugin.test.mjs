@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
-import { appRoot, describeProject, describeRun, readAppFile, tools } from "../server/index.mjs";
+import { appRoot, describeProject, describeRun, pathProblem, readAppFile, tools } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
@@ -740,3 +740,50 @@ test("you changed what a test uses (plan auto-heal Phase 1): an edit that remove
   fs.writeFileSync(path.join(root, "tests/quotes.spec.ts"), `await page.getByText('Store').click();\n`);
   assert.equal(staleCheck({ cwd: root, stop_hook_active: false }, state), null);
 });
+
+test("Claude sees who a test can sign in as — names, roles, places — and what to do when there's no account", () => {
+  const base = { slug: "shop", name: "Shop", modules: [], sets: [], tags: [], folders: [], helpers: [], environments: [{ name: "Staging", url: "https://s.example.com" }] };
+  const out = describeProject({ ...base,
+    roles: [{ name: "Manager", about: "Approves orders" }, { name: "Customer", about: "" }],
+    accounts: [
+      { name: "admin", role: null, places: ["Staging", "Production"], default: true },
+      { name: "manager", role: "Manager", places: ["Staging"], default: false },
+    ],
+    tests: [{ ref: "TEST-00001", title: "Approve an order", module: "Orders", file: "tests/orders.spec.ts", runAs: "manager", signsInAs: ["admin"] }],
+  });
+  assert.match(out, /Test accounts \(each test starts signed in as one — runAs in qahub_push/);
+  assert.match(out, /- admin — on Staging, Production — default/);
+  assert.match(out, /- manager \[Manager\] — on Staging/);
+  assert.match(out, /Roles: Manager — Approves orders\./);
+  assert.match(out, /TEST-00001 “Approve an order”.* — as manager \(switches to admin\)/);
+  const none = describeProject({ ...base, roles: [], accounts: [], tests: [] });
+  assert.match(none, /Test accounts: none — tests run signed out.*Settings → Test accounts/);
+});
+
+test("the path rule matches QA Hub's (apps/web/src/lib/paths.ts): .env files and node_modules are refused both ways", () => {
+  for (const p of [".env", ".env.local", "package.json", "package-lock.json", "playwright.config.ts", "playwright.config.js"]) {
+    assert.ok(pathProblem(p), `${p} is QA Hub's own file`);
+  }
+  for (const p of ["node_modules/x/index.js", "e2e/Node_Modules/y.ts"]) assert.match(pathProblem(p) ?? "", /node_modules/, p);
+  assert.equal(pathProblem("e2e/quotes.spec.ts"), null);
+});
+
+test("one Stop answer: changed app code AND stale test words come back as one block with both reasons", async () => {
+  const { stopCheck } = await import("../hooks/stop.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-stop-"));
+  fs.writeFileSync(path.join(root, "qahub.json"), JSON.stringify({ project: "freight" }));
+  fs.mkdirSync(path.join(root, "tests"), { recursive: true });
+  fs.writeFileSync(path.join(root, "tests/quotes.spec.ts"), `await page.getByText('Save').click();\n`);
+  const state = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-stopst-")), "s.json");
+  fs.writeFileSync(state, JSON.stringify({ [root]: ["Save"] }));
+  const seen = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-stopseen-")), "s");
+  const edit = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(root, "src/QuoteForm.tsx") } }] } });
+
+  const out = stopCheck({ cwd: root, stop_hook_active: false }, edit, { seen, state });
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /no tests went to QA Hub[\s\S]*Tests still look for words/, "both reasons, one message");
+  assert.equal(stopCheck({ cwd: root, stop_hook_active: true }, edit, { seen, state }), null, "never loops");
+  const hooks = JSON.parse(fs.readFileSync(path.join(HERE, "../hooks/hooks.json"), "utf8")).hooks.Stop;
+  assert.equal(hooks.flatMap((h) => h.hooks).length, 1, "one Stop hook, not two");
+});
+

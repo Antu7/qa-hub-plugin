@@ -25,7 +25,8 @@ const SLOW = 120_000; // a push or a pull carries whole files
  */
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ALLOWED = /\.(ts|js|mjs|cjs|json|csv|txt|xml|png|jpe?g|gif|webp|svg|bmp|pdf|xlsx?|docx?|pptx|zip|mp4|mov|mp3|wav)$/i;
-const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json"]);
+// Kept equal to QA Hub's apps/web/src/lib/paths.ts RESERVED (test/plugin.test.mjs pins the list).
+const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json", ".env", ".env.local"]);
 export function pathProblem(rel) {
   if (typeof rel !== "string" || !rel || rel.length > 300) return "not a usable path";
   if (rel.includes("\\")) return "use forward slashes";
@@ -181,6 +182,7 @@ export const TOOLS = [
               sets: { type: "array", items: { type: "string" }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
               distinctFrom: { type: "array", items: { type: "string" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
               data: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" }, value: { type: "string", maxLength: 500 } } }, description: "The values the test types that a person may want to change (names, emails, amounts): name (lower_snake_case) and default. The code reads them: const data = JSON.parse(process.env.QAHUB_DATA ?? \"{}\"); data.course_title ?? \"Fire safety basics\". A person can change each one in QA Hub or make it different every run, and that choice survives your next push. Leave out = unchanged" },
+              runAs: { type: "string", description: "The test account this test starts signed in as — a name from qahub_project's Test accounts, chosen by ROLE for what the test proves (a permission test runs as the role that should, or shouldn't, be allowed). Leave out for the default account. Switching mid-test: await qahub.signInAs(page, \"<name>\"); a second person at the same time: const other = await qahub.as(\"<name>\") — a second signed-in page (take qahub from the test's fixtures), name written out" },
               needs: { type: "array", maxItems: 10, items: { type: "string" }, description: "ONLY when this test uses what another test makes (\"Delete the order\" needs \"Create an order\"): that test's ref or exact title (one in this push counts). It then runs first, and if it fails this test is skipped — every other test still runs. Leave out for an independent test (the normal case); [] removes a link" },
             },
           },
@@ -327,7 +329,7 @@ export function describeProject(s, module) {
     list.push(`${mod}:`);
     for (const t of ts) {
       if (shown++ >= MAX) break;
-      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
+      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.runAs ? ` — as ${t.runAs}` : ""}${t.signsInAs?.length ? ` (switches to ${t.signsInAs.join(", ")})` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
       if (!want) continue; // steps and data: one module at a time
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
       // Its test data (QAHUB_DATA) as QA Hub holds it: a person may have changed a value, or made it vary each run.
@@ -348,8 +350,21 @@ export function describeProject(s, module) {
     `Tags in use: ${s.tags?.join(", ") || "none"}.`,
     `Spec folders: ${s.folders?.join(", ") || "none yet"}. Shared helpers: ${s.helpers?.join(", ") || "none yet"}.`,
     `Environments: ${s.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}.`,
+    describeAccounts(s),
     `Tests (${s.tests.length}):\n${list.join("\n") || "none yet"}`,
   ].join("\n\n");
+}
+
+/** Who a test can sign in as: account names (what the code uses), their role and places. Never a username or password. */
+export function describeAccounts(s) {
+  const accounts = s.accounts ?? [];
+  if (!accounts.length) return "Test accounts: none — tests run signed out. A test that must sign in can't be written yet: ask the person to add an account in QA Hub → Settings → Test accounts.";
+  const roles = (s.roles ?? []).filter((r) => r.about);
+  return [
+    `Test accounts (each test starts signed in as one — runAs in qahub_push, default when left out; switch mid-test with qahub.signInAs(page, "<name>"); two at once with const other = await qahub.as("<name>")):`,
+    ...accounts.map((a) => `- ${a.name}${a.role ? ` [${a.role}]` : ""} — on ${a.places.join(", ")}${a.default ? " — default" : ""}`),
+    ...(roles.length ? [`Roles: ${roles.map((r) => `${r.name} — ${r.about}`).join("; ")}.`] : []),
+  ].join("\n");
 }
 
 const STATE = { proven: "proven", failing: "failing", weak: "weak", "not-run": "not run yet", planned: "planned", untested: "untested" };
