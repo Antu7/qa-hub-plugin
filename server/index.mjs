@@ -25,7 +25,8 @@ const SLOW = 120_000; // a push or a pull carries whole files
  */
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ALLOWED = /\.(ts|js|mjs|cjs|json|csv|txt|xml|png|jpe?g|gif|webp|svg|bmp|pdf|xlsx?|docx?|pptx|zip|mp4|mov|mp3|wav)$/i;
-const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json"]);
+// Kept equal to QA Hub's apps/web/src/lib/paths.ts RESERVED (test/plugin.test.mjs pins the list).
+const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json", ".env", ".env.local"]);
 export function pathProblem(rel) {
   if (typeof rel !== "string" || !rel || rel.length > 300) return "not a usable path";
   if (rel.includes("\\")) return "use forward slashes";
@@ -180,12 +181,27 @@ export const TOOLS = [
               applied: { type: "boolean", description: "true when this push applies the change request qahub_gaps listed for this test" },
               sets: { type: "array", items: { type: "string" }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
               distinctFrom: { type: "array", items: { type: "string" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
-              data: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" }, value: { type: "string", maxLength: 500 } } }, description: "The values the test types that a person may want to change (names, emails, amounts): name (lower_snake_case) and default. The code reads them: const data = JSON.parse(process.env.QAHUB_DATA ?? \"{}\"); data.course_title ?? \"Fire safety basics\". A person can change each one in QA Hub or make it different every run, and that choice survives your next push. Leave out = unchanged" },
+              data: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" }, value: { type: "string", maxLength: 500 }, variable: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$", description: "A project variable (qahub_project → Variables, or one you send in variables) that gives this value a NEW value every run; value stays the fallback" } } }, description: "The values the test types: name (lower_snake_case), default, and — for anything whose exact value doesn't decide what the test proves (names, titles, emails, amounts, dates, notes) — variable, so every run tries different data. The code reads them: const data = JSON.parse(process.env.QAHUB_DATA ?? \"{}\"); data.course_title ?? \"Fire safety basics\" — and checks the app shows data.course_title, never a hard-coded copy. A person's own choice (a value made fixed or linked elsewhere) survives your push. Leave out = unchanged" },
+              runAs: { type: "string", description: "The test account this test starts signed in as — a name from qahub_project's Test accounts, chosen by ROLE for what the test proves (a permission test runs as the role that should, or shouldn't, be allowed). Leave out for the default account. Switching mid-test: await qahub.signInAs(page, \"<name>\"); a second person at the same time: const other = await qahub.as(\"<name>\") — a second signed-in page (take qahub from the test's fixtures), name written out" },
               needs: { type: "array", maxItems: 10, items: { type: "string" }, description: "ONLY when this test uses what another test makes (\"Delete the order\" needs \"Create an order\"): that test's ref or exact title (one in this push counts). It then runs first, and if it fails this test is skipped — every other test still runs. Leave out for an independent test (the normal case); [] removes a link" },
             },
           },
         },
         behaviours: { type: "array", items: { type: "object", required: ["module", "name", "kind"], properties: { module: { type: "string" }, name: { type: "string" }, kind: { type: "string", enum: ["create", "view", "edit", "delete", "search", "validation", "workflow", "permission", "calculation", "navigation", "other"] }, priority: { type: "string", enum: ["high", "medium", "low"] }, description: { type: "string" } } }, description: "Behaviours the app has that QA Hub doesn't list yet (a test in this push may cover one)" },
+        variables: {
+          type: "array", maxItems: 30, description: "Project variables a test's data links to that qahub_project doesn't list yet — created (one that exists is the person's and is left as it is). Reuse an existing one when it fits. Rules must be what the app ACCEPTS (a title field taking 3–80 characters: minLength 3, maxLength 80), so every drawn value is valid input",
+          items: { type: "object", additionalProperties: false, required: ["name", "kind"], properties: {
+            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" },
+            kind: { type: "string", enum: ["text", "number", "date", "email", "list"] },
+            rules: { type: "object", additionalProperties: false, description: "text: minLength, maxLength, letters, digits, spaces, symbols; number: min, max, decimals; date: fromDays, toDays (from today), format; email: domain", properties: {
+              minLength: { type: "integer", minimum: 1, maximum: 500 }, maxLength: { type: "integer", minimum: 1, maximum: 500 }, letters: { type: "boolean" }, digits: { type: "boolean" }, spaces: { type: "boolean" }, symbols: { type: "boolean" },
+              min: { type: "number" }, max: { type: "number" }, decimals: { type: "integer", minimum: 0, maximum: 6 },
+              fromDays: { type: "integer" }, toDays: { type: "integer" }, format: { type: "string", enum: ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "DD.MM.YYYY"] }, domain: { type: "string" } } },
+            values: { type: "array", maxItems: 200, items: { type: "string", maxLength: 500 }, description: "list: the values to pick from (real-looking options the app accepts)" },
+            pick: { type: "string", enum: ["random", "round"], description: "list: random each time, or one by one" },
+            tricky: { type: "string", enum: ["no", "sometimes"], description: "sometimes = about one run in five uses an edge value inside the rules (the longest/shortest allowed, accents, quotes and <, other scripts, min/max/0) — use it for fields where that finds bugs" },
+          } },
+        },
         remove: { type: "array", items: { type: "string" }, description: "Refs of tests to take out on purpose (they go to QA Hub's recycle bin) — e.g. a test deleted from its file. Never to get past a refusal." },
         fewerChecks: { type: "string", minLength: 20, maxLength: 300, description: "ONLY when a check (expect) truly has to go because the app changed on purpose — the real reason. While a person has asked you to fix a test, a push that removes checks is refused without it; never use it to make a failing test pass" },
         modules: { type: "array", items: { type: "object", properties: { name: { type: "string" }, path: { type: "string" }, parent: { type: "string", description: "The parent module's path, for a sub-page (e.g. /quotes for /quotes/print)" } }, required: ["name", "path"] }, description: "Modules the app has that QA Hub doesn't yet (qahub_project lists what exists): each with its URL path and, for a sub-page, its parent's path. QA Hub adds them; it never renames an existing module." },
@@ -206,7 +222,7 @@ export const TOOLS = [
         environment: { type: "string", description: "Which environment (qahub_status lists them); leave out for the first" },
         browser: { type: "string", enum: ["chrome", "firefox", "webkit", "edge"] },
         show: { type: "boolean", description: "true opens a visible browser window on the person's computer (default: runs in the background)" },
-        repeat: { type: "integer", minimum: 1, maximum: 10, description: "Run each test this many times in a row — 5 to check whether a test is flaky (it then says \"Failed 2 of 5 times\")" },
+        repeat: { type: "integer", minimum: 1, maximum: 10, description: "Run each test this many times in a row. A test with dynamic data (data linked to variables) gets NEW values on every try — repeat 5 tries 5 different inputs, and a failure shows the values that broke it (a bug that depends on the data, not a flaky test). Without dynamic data, 5 checks whether a test is flaky (\"Failed 2 of 5 times\")" },
         where: { type: "string", enum: ["computer", "server"], description: "\"server\" runs it on QA Hub's own test computers (no computer of the person's needed; always headless; only for apps reachable from the internet). Default: the person's computer" },
         wait: { type: "boolean", description: "Wait for the result (default true, up to about 5 minutes); false returns the run number at once" },
       },
@@ -327,12 +343,12 @@ export function describeProject(s, module) {
     list.push(`${mod}:`);
     for (const t of ts) {
       if (shown++ >= MAX) break;
-      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
+      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.runAs ? ` — as ${t.runAs}` : ""}${t.signsInAs?.length ? ` (switches to ${t.signsInAs.join(", ")})` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
       if (!want) continue; // steps and data: one module at a time
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
       // Its test data (QAHUB_DATA) as QA Hub holds it: a person may have changed a value, or made it vary each run.
       if (t.verified === false) list.push(`    not counted yet: passed ${t.passes ?? 0} of 2 times since its code changed — run it (repeat: 2)`);
-      if (t.data?.length) list.push(`    data: ${t.data.map((d) => (d.varies ? `${d.name} (different every run)` : `${d.name} = “${d.value}”`)).join(", ")}`);
+      if (t.data?.length) list.push(`    data: ${t.data.map((d) => (d.varies ? `${d.name} (different every run${d.variable ? `: ${d.variable}` : ""})` : `${d.name} = “${d.value}”${d.fixedByPerson ? " (fixed by a person — leave it)" : ""}`)).join(", ")}`);
     }
   }
   const total = [...byModule.values()].reduce((n, x) => n + x.length, 0);
@@ -348,8 +364,31 @@ export function describeProject(s, module) {
     `Tags in use: ${s.tags?.join(", ") || "none"}.`,
     `Spec folders: ${s.folders?.join(", ") || "none yet"}. Shared helpers: ${s.helpers?.join(", ") || "none yet"}.`,
     `Environments: ${s.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}.`,
+    describeAccounts(s),
+    describeVariables(s),
     `Tests (${s.tests.length}):\n${list.join("\n") || "none yet"}`,
   ].join("\n\n");
+}
+
+/** Who a test can sign in as: account names (what the code uses), their role and places. Never a username or password. */
+export function describeAccounts(s) {
+  const accounts = s.accounts ?? [];
+  if (!accounts.length) return "Test accounts: none — tests run signed out. A test that must sign in can't be written yet: ask the person to add an account in QA Hub → Settings → Test accounts.";
+  const roles = (s.roles ?? []).filter((r) => r.about);
+  return [
+    `Test accounts (each test starts signed in as one — runAs in qahub_push, default when left out; switch mid-test with qahub.signInAs(page, "<name>"); two at once with const other = await qahub.as("<name>")):`,
+    ...accounts.map((a) => `- ${a.name}${a.role ? ` [${a.role}]` : ""} — on ${a.places.join(", ")}${a.default ? " — default" : ""}${a.oneAtATime ? " — one run at a time (a second run that needs it is refused while one uses it: keep it to the tests that truly need it)" : ""}`),
+    ...(roles.length ? [`Roles: ${roles.map((r) => `${r.name} — ${r.about}`).join("; ")}.`] : []),
+  ].join("\n");
+}
+
+/** The project's variables: what a test's data can link to so every run tries new values. */
+export function describeVariables(s) {
+  const vars = s.variables ?? [];
+  const head = "Variables (link a test's data to one — data: [{ name, value, variable }] — and every run, and every try of a repeat, draws a new value; send new ones in qahub_push variables)";
+  if (!vars.length) return `${head}: none yet.`;
+  const rule = (v) => Object.entries(v.rules ?? {}).map(([k, x]) => `${k} ${x}`).join(", ");
+  return [`${head}:`, ...vars.map((v) => `- ${v.name} — ${v.kind}${v.kind === "list" ? ` of ${v.values} (${v.pick}${v.sample?.length ? `, e.g. ${v.sample.map((x) => `“${x}”`).join(", ")}` : ""})` : rule(v) ? ` (${rule(v)})` : ""}${v.tricky ? " — sometimes an edge value" : ""}`)].join("\n");
 }
 
 const STATE = { proven: "proven", failing: "failing", weak: "weak", "not-run": "not run yet", planned: "planned", untested: "untested" };
@@ -614,7 +653,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.call("POST", `/api/v1/projects/${p}/fixes/${test}`, { kind, note });
       return `Noted on ${test} in QA Hub. Now run it again: qahub_run { tests: ["${test}"] } — a pass marks it fixed.`;
     },
-    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [], fewerChecks } = {}) {
+    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [], variables = [], fewerChecks } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       const tests = given.map((t) => (typeof t?.file === "string" ? { ...t, file: t.file.replaceAll("\\", "/") } : t)); // a Windows path
@@ -626,7 +665,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           throw new QaHubError(`${lost.map((m) => `Module “${m}”`).join(", ")} isn't in QA Hub, so ${lost.length === 1 ? "its tests" : "those tests"} would land in Inbox. QA Hub's modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}. Use one of those (the one for the page the test covers), or — if it's a part of the app QA Hub doesn't have yet — add it in the same push: modules: [{ name: "${lost[0]}", path: "/…", parent: "/…" }] (its URL path; parent only for a sub-page). Nothing was sent.`);
         }
       }
-      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(fewerChecks ? { fewerChecks } : {}) };
+      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(fewerChecks ? { fewerChecks } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
@@ -636,6 +675,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const refs = res?.refs ?? [];
       return [
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
+        ...(res?.variables?.created?.length ? [`Variables created: ${res.variables.created.join(", ")} — each run now draws new values for the data linked to them.`] : []),
+        ...(res?.variables?.alreadyThere?.length ? [`Already in QA Hub (kept as the person set them): ${res.variables.alreadyThere.join(", ")}.`] : []),
         ...(res?.modules?.added?.length ? [`Modules added: ${res.modules.added.map((m) => `${m.name} (${m.path})`).join(", ")}.`] : []),
         ...(res?.modules?.named ?? []).map((m) => `QA Hub calls ${m.path} “${m.qahub}” (you said “${m.yours}”) — use “${m.qahub}” from now on.`),
         ...(refs.length ? [`Tests: ${refs.map((r) => `${r.ref} “${r.title}”${r.module ? ` in ${r.module}` : ""}`).join(", ")}.`, `Run them now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(refs.map((r) => r.ref))}, repeat: 2 }`] : []),
