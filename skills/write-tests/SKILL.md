@@ -24,7 +24,7 @@ The person may only say "automate this", "test the training page" or "I want neg
    - **edit**: changed fields show the new values and unchanged ones keep theirs;
    - **delete**: gone from the list, from search and its page;
    - **workflow / permission**: every allowed move or role, and every forbidden one blocked;
-   - **the whole life of a record**: for anything people create, one test walks it end to end — create → see it (list and its page) → edit → see the change → delete → gone. Deeper cases (validation, permissions, boundaries) are their own tests, each making and deleting its own record.
+   - **the whole life of a record** — see **The test standard** below: Create → View → Edit → Delete as a chain of tests, with every field.
    Each test case: a title, its type, priority, what must be true before it starts, and **every step with its expected result**. Check `qahub_find` for each — a **SAME** test already exists: improve it, never write a second one.
 5. **`qahub_plan`** the behaviours and test cases. A test case whose title is already a test in that module updates that test (the reply lists it under "already tests") — change its code, never write a second one; `distinctFrom` never applies to the same title. High-priority and risky test cases (deleting, permissions, money) wait for a person by default — they decide what "correct" is; the reply says which wait: tell the user (with the link) and **stop** for those tests. Write the code for the approved ones.
 6. **Look, then write the code.** `qahub_look { path }` every page the test touches first — the real role and name of each control, where it lands, the app's errors; never guess a selector from the code alone. No code for this part of the app? Design from what `qahub_look` shows. But the page shows what the app does *now*, not what is *correct*: expected results come from the plan and the person, never copied off a page that may be wrong. Then write it (`@playwright/test`, in the project's spec folders, reusing its helpers; `qahub_pull` first if you change a shared file) by the **Checklist** at the end of this skill. Also:
@@ -42,6 +42,29 @@ The person may only say "automate this", "test the training page" or "I want neg
 9. **Change and fix requests** (`qahub_gaps`): a change request on a **planned** test case is a person's note on your plan — `qahub_plan` it again with the change; on a test with code, change the code and push with `applied: true` (`replaces` when its title or file changed). A **fix request** (a person pressed "Ask Claude to fix it"; the session start says so): ask the user once before changing code. Then `qahub_fixes` — the step, the error and the screenshot of the moment it failed; look at the screenshot. Decide in plain words whose fault it is: the app (a bug — fix the app's code) or the test (the app changed on purpose — update the test and push it). Never make it pass by checking less or waiting longer. Then `qahub_fix_note { test, kind: "app" | "test" | "neither", note }` — one or two sentences a non-programmer understands, shown in QA Hub — and `qahub_run { tests: [ref] }`; a pass marks it fixed. Can't fix it after 3 rounds: `kind: "neither"` and say what a person should look at.
 10. **Tell the user** in two lines: what is now proven (behaviours), what's still untested, the run result and its link.
 11. **Suggest what's next — unasked.** From the untested and weak behaviours (`qahub_gaps`), recommend the 2–3 tests worth most, each with one plain reason — money, deleting data and who-may-do-what first ("Delete a course: nothing proves a deleted course is really gone"). Also suggest kinds they haven't asked for when the feature calls for them (a form with no negative tests, an approval with no permission test). Offer to do them; don't start without a yes.
+
+## The test standard — what a client (technical or not) expects to see
+
+Shallow tests are the failure here: a create test that fills only the required fields and checks two of them, then deletes, proves almost nothing. Before you plan, write two lists for each form or record (from `qahub_knowledge`, `qahub_code`, `qahub_look`):
+- **Fields:** every field — required AND optional — with its type, limits, allowed values and messages. Optional fields are where bugs hide: fill them.
+- **Where it shows:** every place a saved value appears afterwards — the list or card, search, the details page or drawer, the reopened form, exports (a PDF, a CSV, an email), other pages that use it (a dashboard count, a dropdown elsewhere).
+
+Then plan by the kind of feature:
+- **A record people create** (an SDS, a company, a user) — a chain of tests, each one thing a person checks, run in order with `needs`:
+  1. **Create it with every field** — required and optional, values from variables; `qahub.keep("<thing>", { name, id })` at the end.
+  2. **View it everywhere** — `qahub.take("<thing>")`; every field in every place on the "where it shows" list.
+  3. **Edit every editable field** — then see each change everywhere it shows, and the unchanged fields kept.
+  4. **Delete it through the screen** (the button or menu a person uses) — gone from the list, search and its page.
+  Each test in the chain, when it fails, deletes the record itself (`finally`, when it didn't finish) so nothing is left behind; the next ones are skipped. Plus their own tests: required fields, limits (max, max+1), wrong formats, duplicates, who may do it.
+- **A form alone:** each required field empty, each limit, wrong formats → the exact message AND nothing saved.
+- **A list:** search, each filter, sorting, paging, the empty state.
+- **A multi-step flow:** each step, going back, leaving halfway and coming back, the final result (the generated file's content, not only its link).
+- **Import / export:** a good file, a bad file, and what came out.
+Never take a shortcut through the app's API, a database or `page.evaluate` when the screen can do it — a test of a person's flow uses the person's screen. The API is only for cleaning up after a failure.
+
+**The plan, as the person reads it:** one plain sentence per test saying what it proves ("Creating an SDS with every detail filled in saves all of them"), grouped by feature; its type and priority after it for those who want them. No jargon in the sentence.
+
+**Before every push, review each test like a strict QA lead:** does it fill every field on the list? Check every place on the "where it shows" list? Would it catch a field that silently isn't saved? Uses the screen, not the API? If not, fix it first.
 
 ## Checklist for every test file
 1. Tests start signed in as their test account: choose it by ROLE (qahub_project → Test accounts) and push it as `runAs`; cross roles with `await qahub.signInAs(page, "manager")`; two people at once with `const manager = await qahub.as("manager")`. No account for the role? Tell the user to add it. No log-in steps; never a password, key or token in a file.
