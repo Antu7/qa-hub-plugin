@@ -166,6 +166,16 @@ export const TOOLS = [
     } },
   },
   {
+    name: "qahub_map",
+    description: "Map the app: send the WHOLE list of its modules (the feature areas a tester would name), so QA Hub knows every part of the app and shows what has no tests. Only organises — never tests or changes the app. Do it yourself, without asking, when qahub_gaps says the app isn't mapped: build the list from qahub_knowledge's page topics (\"page /address\") or the app's routes — one module per feature area (path = its page address), sub-pages with parent = the parent's path. Names stay plain (\"Customers\", \"Customer list\"). A first map is open to anyone who writes tests; mapping again is for admins and project managers.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["modules"], properties: {
+      modules: { type: "array", minItems: 1, maxItems: 300, items: { type: "object", additionalProperties: false, required: ["name", "path"], properties: {
+        name: { type: "string" }, path: { type: "string", description: "The page's address, e.g. /admin/customers" }, parent: { type: "string", description: "The parent module's path, for a sub-page" },
+      } } },
+      project: { type: "string", description: "Leave out to use the linked project" },
+    } },
+  },
+  {
     name: "qahub_pull",
     description: "Bring QA Hub's latest test files into this folder — teammates push tests too, so do this before changing a shared spec file or helper. Files you don't have are added; a file that differs here is only replaced when you list it in overwrite (after looking at what's different), so nothing local is lost.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
@@ -543,6 +553,13 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if ("text" in r) return r.text === null ? `${r.path}: ${r.note}` : `${r.path}${r.note ? ` (${r.note})` : ""}\n\n${r.text}`;
       if ("search" in r) return r.files.length ? `Files mentioning “${r.search}”:\n${r.files.join("\n")}` : `No file mentions “${r.search}”.`;
       return `${r.files.length} files${r.under ? ` in ${r.under}` : ""}${r.note ? ` — ${r.note}` : ""}:\n${r.files.join("\n")}`;
+    },
+
+    async qahub_map({ modules, project } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      const r = await qa.call("POST", `/api/v1/projects/${p}/map`, { modules });
+      return `Mapped: ${r.modules} modules (${r.added} new${r.renamed ? `, ${r.renamed} renamed` : ""}${r.removed ? `, ${r.removed} removed` : ""}${r.kept ? `, ${r.kept} kept because tests still use them` : ""}). QA Hub now shows what has no tests — qahub_gaps.`;
     },
 
     async qahub_learn({ topic, body, files, sha, project } = {}) {
