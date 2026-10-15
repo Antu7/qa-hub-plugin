@@ -139,6 +139,33 @@ export const TOOLS = [
     } },
   },
   {
+    name: "qahub_knowledge",
+    description: "What a Claude already learned about this app's code, kept in QA Hub for the whole team: pages and their source files, fields and their rules, messages, roles, flows — per topic (\"app\", or a module). Read it BEFORE reading the code: it's faster and saves your usage. Without topic: every topic and whether it's up to date (changed: files the code changed since — refresh those); with topic: that one in full.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      topic: { type: "string", description: "\"app\" or a module name; leave out for the list" },
+      project: { type: "string", description: "Leave out to use the linked project" },
+    } },
+  },
+  {
+    name: "qahub_code",
+    description: "The app's code from the project's GitHub repo, read-only — for when this folder doesn't have the app's code (a QA without a checkout). One of: path (a file's text), search (files whose code mentions some words, e.g. a button's label or an error message), under (the files in a folder; \"\" for the whole repo). Read qahub_knowledge first; after reading, qahub_learn what you found so nobody reads it again.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      path: { type: "string" }, search: { type: "string" }, under: { type: "string" },
+      project: { type: "string", description: "Leave out to use the linked project" },
+    } },
+  },
+  {
+    name: "qahub_learn",
+    description: "Save what you learned about this app's code so the next Claude (any teammate's) needn't read it again: one topic — \"app\" for the whole, or a module — in plain words a tester can use (routes and their source files; each form's fields, required ones, formats and limits; success and error messages; who may do what; the main flows and their edge cases). Facts, not code. Give the files you read and the commit (git rev-parse HEAD). Saving a topic again replaces it.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["topic", "body", "files"], properties: {
+      topic: { type: "string" },
+      body: { type: "string", description: "Plain-words facts, up to ~20,000 characters" },
+      files: { type: "array", items: { type: "string" }, description: "Source files it came from, paths from the repo root" },
+      sha: { type: "string", description: "The commit it reflects (git rev-parse HEAD), if this folder is a git checkout" },
+      project: { type: "string", description: "Leave out to use the linked project" },
+    } },
+  },
+  {
     name: "qahub_pull",
     description: "Bring QA Hub's latest test files into this folder — teammates push tests too, so do this before changing a shared spec file or helper. Files you don't have are added; a file that differs here is only replaced when you list it in overwrite (after looking at what's different), so nothing local is lost.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
@@ -485,6 +512,37 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       for (const d of res.behaviours?.dropped ?? []) lines.push(`“${d}” was dropped by a person — don't propose it again or test it.`);
       return lines.join("\n") || "Nothing planned.";
     },
+    async qahub_knowledge({ topic, project } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      const t = String(topic ?? "").trim();
+      const { entries } = await qa.call("GET", `/api/v1/projects/${p}/knowledge${t ? `?topic=${encodeURIComponent(t)}` : ""}`);
+      const state = (e) => (e.upToDate ? "up to date" : e.changed ? `OUT OF DATE — changed since: ${e.changed.join(", ")}` : `can't tell if current (${e.unknown})`);
+      if (t) {
+        const e = entries[0];
+        return `${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
+      }
+      if (!entries.length) return "Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (topic \"app\" for the whole, or a module) so the next Claude doesn't have to.";
+      return `What's known about this app (read a topic in full with qahub_knowledge { topic }):\n${entries.map((e) => `- ${e.topic}: ${e.size} characters, ${state(e)}`).join("\n")}\nOut of date: re-read just those files, then qahub_learn the topic again.`;
+    },
+
+    async qahub_code({ path, search, under, project } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      const q = path ? `path=${encodeURIComponent(path)}` : search ? `search=${encodeURIComponent(search)}` : `under=${encodeURIComponent(under ?? "")}`;
+      const r = await qa.call("GET", `/api/v1/projects/${p}/code?${q}`);
+      if ("text" in r) return r.text === null ? `${r.path}: ${r.note}` : `${r.path}${r.note ? ` (${r.note})` : ""}\n\n${r.text}`;
+      if ("search" in r) return r.files.length ? `Files mentioning “${r.search}”:\n${r.files.join("\n")}` : `No file mentions “${r.search}”.`;
+      return `${r.files.length} files${r.under ? ` in ${r.under}` : ""}${r.note ? ` — ${r.note}` : ""}:\n${r.files.join("\n")}`;
+    },
+
+    async qahub_learn({ topic, body, files, sha, project } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, body, files: files ?? [], ...(sha ? { sha } : {}) });
+      return `Saved “${topic}” — every teammate's Claude reads it now instead of the code.`;
+    },
+
     async qahub_find({ about, module, project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
@@ -563,6 +621,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       // Behaviours first: what should be tested and isn't, highest priority first (QA Hub sorts them).
       const b = g.behaviours ?? { untested: [], failing: [], weak: [], notDesigned: [] };
       const lines = [];
+      const hit = g.affectedByChanges;
+      if (hit?.tests?.length) lines.push(`Update before running — the app's code changed since the last run (${hit.since} → ${hit.now}) and these tests use what it took out: ${hit.tests.slice(0, 10).map((t) => `${t.ref} “${t.title}” (uses ${t.words.map((w) => `“${w}”`).join(", ")}; changed in ${t.files.join(", ")})`).join("; ")}. Read each change: renamed or removed on purpose → update the test (qahub_pull, change, qahub_push); not on purpose → it's an app bug, say so.`);
       if (b.untested.length) lines.push(`Test next: ${b.untested.slice(0, 10).map((x) => `${x.name} (${x.module}, ${x.kind}, ${x.priority})`).join("; ")}.`);
       if (b.failing.length || b.weak.length) lines.push(`Not proven: ${[...b.failing, ...b.weak].slice(0, 10).map((x) => `${x.name} (${x.module}, ${b.failing.includes(x) ? "failing" : "weak"})`).join("; ")}.`);
       if (b.notDesigned.length) lines.push(`Not designed yet: ${b.notDesigned.join(", ")} — qahub_design them and propose their behaviours.`);

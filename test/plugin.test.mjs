@@ -162,7 +162,7 @@ test("speaks MCP over stdio: initialize, list the tools, call one", async () => 
   assert.equal((await answer(1)).result.serverInfo.name, "qahub");
   ask({ method: "notifications/initialized" });
   ask({ id: 2, method: "tools/list" });
-  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look", "qahub_schedule"]);
+  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_knowledge", "qahub_code", "qahub_learn", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look", "qahub_schedule"]);
   ask({ id: 3, method: "tools/call", params: { name: "qahub_status", arguments: {} } });
   assert.match((await answer(3)).result.content[0].text, /Connected to QA Hub/);
   } finally { child.kill(); }

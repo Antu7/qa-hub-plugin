@@ -52,6 +52,8 @@ redirect, and never over plain `http` except to this computer or the office netw
 - `qahub_plan` — test cases in plain words (steps with expected results, type, priority, preconditions, what they cover) before any code; reviewed by a person when the project asks for it
 - `qahub_project` — the project's structure: the module tree (with addresses), hand-picked sets, every test with its steps and who made it, spec folders and shared helpers
 - `qahub_find` — what already tests a behaviour (anyone's tests); SAME = QA Hub would refuse a new one as a duplicate
+- `qahub_code` — the app's code from the project's linked GitHub, read-only, for a QA without a checkout
+- `qahub_knowledge` / `qahub_learn` — what a Claude learned about the app's code, shared with the team (marked out of date when GitHub shows those files changed)
 - `qahub_pull` — QA Hub's latest test files into this folder (adds what's missing; replaces a differing file only when asked)
 - `qahub_push` — send test files and the tests in them (only files inside this app's folder; `.env`, keys and anything under `.git` / `node_modules` are never sent). The reply lists each test's ref.
 - `qahub_run` — run tests on the person's own connected computer (signed in, real browser) and wait for the result: each failure's test, step, error, and whether the app broke or the page changed. By refs, a tag, a module, a set, or all.
