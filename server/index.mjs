@@ -523,7 +523,16 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         return `${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
       }
       if (!entries.length) return "Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (topic \"app\" for the whole, or a module) so the next Claude doesn't have to.";
-      return `What's known about this app (read a topic in full with qahub_knowledge { topic }):\n${entries.map((e) => `- ${e.topic}: ${e.size} characters, ${state(e)}`).join("\n")}\nOut of date: re-read just those files, then qahub_learn the topic again.`;
+      const pages = entries.filter((e) => e.topic.startsWith("page "));
+      const rest = entries.filter((e) => !e.topic.startsWith("page "));
+      const stale = pages.filter((e) => e.changed).map((e) => e.topic.slice(5));
+      return [
+        "What's known about this app (read a topic in full with qahub_knowledge { topic }):",
+        ...rest.map((e) => `- ${e.topic}: ${e.size} characters, ${state(e)}`),
+        ...(pages.length ? [`- ${pages.length} pages, one topic each — "page <address>": what a user sees there (labels, buttons, texts), the validation its forms enforce with the exact limits and error messages, the server calls, and the files behind it. Read the page you're testing first: its rules are your test data limits (variables) and its messages are what negative tests expect. Pages: ${pages.map((e) => e.topic.slice(5)).join(", ")}`] : []),
+        ...(stale.length ? [`- Pages whose code changed since: ${stale.join(", ")} — trust the code over their facts until QA Hub maps them again (within the hour).`] : []),
+        "Out of date: re-read just those files, then qahub_learn the topic again.",
+      ].join("\n");
     },
 
     async qahub_code({ path, search, under, project } = {}) {
