@@ -21,6 +21,9 @@ const linked = /^[a-z0-9-]{1,60}$/.test(project ?? "");
 let text;
 if (Number(process.versions.node.split(".")[0]) < 18) {
   text = `QA Hub plugin: needs Node.js 18 or newer (this computer has ${process.version}). If the user asks for tests or QA Hub, tell them to install the current Node.js from nodejs.org and restart Claude Code.`;
+} else if (process.env.QAHUB_CHAT) {
+  // QA Hub's recorder chat started this Claude with an address and key it just used: no check to wait on.
+  text = `QA Hub plugin: running inside QA Hub's recorder chat for ${linked ? project : "this project"} — connected; use the qahub tools.`;
 } else {
   const qa = client({ key: process.env.CLAUDE_PLUGIN_OPTION_API_KEY, server: process.env.CLAUDE_PLUGIN_OPTION_SERVER, timeoutMs: 3_000 });
   const latest = publishedVersion(); // in parallel with the key check; at most 2 s
@@ -46,7 +49,11 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
     // versions defaulted to http://localhost:3100). Say how to point it at the real one.
     const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(process.env.CLAUDE_PLUGIN_OPTION_SERVER ?? "");
     const hint = local ? ` The plugin's QA Hub address is set to ${process.env.CLAUDE_PLUGIN_OPTION_SERVER}, a QA Hub on this computer — start it, or set the address to the one shown on QA Hub's Claude setup page (/plugin → qahub → Configure).` : "";
-    text = linked
+    // Only slow (busy, or a slow network): the tools may well work — never tell Claude to stay away from them for that.
+    const slow = e.code === "timeout" || e.code === "unreachable";
+    text = slow
+      ? `QA Hub plugin: QA Hub was slow to answer at session start (${e.message}). The qahub tools may still work — use them when needed, and only if they fail too tell the user.`
+      : linked
       ? `QA Hub plugin: NOT connected — ${e.message}${hint} Until this is fixed, don't call the qahub tools; tell the user once what to do.`
       : `QA Hub plugin: not connected — ${e.message}${hint} Mention it only if the user asks for tests or QA Hub.`;
   }
