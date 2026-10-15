@@ -528,6 +528,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const p = projectOf(project);
       const res = await qa.call("POST", `/api/v1/projects/${p}/plan`, { ...(behaviours.length ? { behaviours } : {}), tests });
       // Each test case's stage says whether it waits for a person (high-priority and risky ones, by default).
+      building(root, [...res.planned, ...(res.updated ?? [])].map((x) => x.ref));
       const waiting = res.planned.filter((x) => x.stage === "planned").length;
       const ready = res.planned.length - waiting;
       const lines = [];
@@ -793,6 +794,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         throw e;
       });
       const refs = res?.refs ?? [];
+      building(root, refs.map((r) => r.ref));
       return [
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
         ...(res?.variables?.created?.length ? [`Variables created: ${res.variables.created.join(", ")} — each run now draws new values for the data linked to them.`] : []),
@@ -861,6 +863,21 @@ if (isMain(import.meta.url)) {
 
 // ---- plan review: what a person decided in QA Hub ---------------------------------------------------
 /** Each test's stage, and the changes a person asked for, as QA Hub has them now. */
+/**
+ * The tests Claude is building in this folder (planned or pushed here, last 2 days): the Stop hook keeps it at work
+ * until each is approved, written and has passed twice. Called with no refs, it only reads. Never throws.
+ */
+export function building(root, refs = []) {
+  const f = path.join(os.tmpdir(), `qahub-building-${Buffer.from(root).toString("base64url").slice(-60)}.json`);
+  let have = {};
+  try { have = JSON.parse(fs.readFileSync(f, "utf8")); } catch { /* none yet */ }
+  const now = Date.now();
+  for (const [r, at] of Object.entries(have)) if (now - at > 2 * 86_400_000) delete have[r];
+  for (const r of refs) if (/^TEST-\d+$/.test(r)) have[r] = now;
+  if (refs.length) try { fs.writeFileSync(f, JSON.stringify(have)); } catch { /* best effort */ }
+  return Object.keys(have);
+}
+
 export async function reviewState(qa, p) {
   const [proj, gaps] = await Promise.all([qa.call("GET", `/api/v1/projects/${p}`), qa.call("GET", `/api/v1/projects/${p}/gaps`).catch(() => ({}))]);
   return { tests: new Map((proj.tests ?? []).map((t) => [t.ref, t])), changes: new Map((gaps.changeRequests ?? []).map((c) => [c.ref, c])) };

@@ -837,3 +837,27 @@ test("a try of a test that hasn't passed yet says it stays out of Results", () =
   assert.match(describeRun(run, "http://q"), /stays out of Results/);
   assert.doesNotMatch(describeRun({ ...run, trial: false }, "http://q"), /stays out of Results/);
 });
+
+test("keep going: Claude goes back to work until the tests it builds are done", async () => {
+  const { leftOf, keepGoing, MAX, MAX_WAIT } = await import("../hooks/keep-going.mjs");
+  const tests = new Map([
+    ["TEST-00003", { ref: "TEST-00003", title: "Create an SDS", stage: "active", file: "a.spec.ts", verified: false, passes: 0 }],
+    ["TEST-00004", { ref: "TEST-00004", title: "Empty form", stage: "active", file: "b.spec.ts" }],
+    ["TEST-00006", { ref: "TEST-00006", title: "Hazardous SDS", stage: "approved" }],
+    ["TEST-00007", { ref: "TEST-00007", title: "Non-hazardous SDS", stage: "planned" }],
+  ]);
+  const left = leftOf(tests, ["TEST-00003", "TEST-00004", "TEST-00006", "TEST-00007", "TEST-00099"]);
+  assert.deepEqual([left.fix, left.write, left.waiting].map((x) => x.map((t) => t.ref)), [["TEST-00003"], ["TEST-00006"], ["TEST-00007"]]);
+  const out = keepGoing(left, { n: 0, waits: 0 });
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /TEST-00003 “Create an SDS” \(0 of 2 passes\)/);
+  assert.match(out.reason, /write, push and run them: TEST-00006/);
+  assert.match(out.reason, /qahub_wait_review \{ tests: \["TEST-00007"\] \}/);
+  // It stops: when it needs the person, after MAX rounds, after an hour of only waiting, and when all are done.
+  assert.equal(keepGoing(left, { n: 0, waits: 0 }, "Needs you: add a test account for the admin role"), null);
+  assert.equal(keepGoing(left, { n: MAX, waits: 0 }), null);
+  const onlyWaiting = { waiting: left.waiting, write: [], fix: [] };
+  assert.equal(keepGoing(onlyWaiting, { n: 1, waits: MAX_WAIT }), null);
+  assert.equal(keepGoing(onlyWaiting, { n: 1, waits: 0 })?.decision, "block");
+  assert.equal(keepGoing(leftOf(tests, ["TEST-00004"]), { n: 0, waits: 0 }), null);
+});
