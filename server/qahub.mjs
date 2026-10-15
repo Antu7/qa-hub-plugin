@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.23";
+export const VERSION = "0.7.24";
 /** Where QA Hub lives unless the plugin settings name another address. One place, used by the server and the hooks. */
 export const DEFAULT_SERVER = "https://app.qahub.dev";
 

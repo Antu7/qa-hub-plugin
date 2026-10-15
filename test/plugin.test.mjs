@@ -595,7 +595,7 @@ test("a failure comes with where it happened: the page, the failing code lines, 
   await t.qahub_link({ project: "freight" });
   polls = 0;
   const said = await t.qahub_run({ tests: ["TEST-00004"] });
-  assert.match(said, /On the page: http:\/\/localhost:3000\/quotes \(“Quotes”\)/);
+  assert.match(said, /It ended on: http:\/\/localhost:3000\/quotes \(“Quotes”\)/);
   assert.match(said, /status: Quote failed/);
   assert.match(said, /tests\/quotes\.spec\.ts:12[\s\S]*> 12 \|/);
   assert.match(said, /Values it used: Customer name = “Acme 4821”/);
@@ -830,4 +830,10 @@ test("plan review: approved, changes asked and rejected are told apart; still wa
   assert.match(words, /TEST-3 “Limits”: changes asked — use 12 characters/);
   assert.match(words, /Rejected \(removed\): TEST-4/);
   assert.match(words, /Still waiting for: TEST-2/);
+});
+
+test("a try of a test that hasn't passed yet says it stays out of Results", () => {
+  const run = { number: 9, status: "finished", verdict: "fail", passed: 0, failed: 1, url: "/p/x/runs/9", trial: true, failures: [] };
+  assert.match(describeRun(run, "http://q"), /stays out of Results/);
+  assert.doesNotMatch(describeRun({ ...run, trial: false }, "http://q"), /stays out of Results/);
 });

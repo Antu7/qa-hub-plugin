@@ -345,8 +345,8 @@ const KIND = { bug: "the app broke", missing: "something on the page changed —
 /** Where a failure happened: the page (address, title, what it showed), the failing code lines, the values typed. */
 export function whereItFailed(ctx, values) {
   const out = [];
-  if (ctx?.url) out.push(`On the page: ${ctx.url}${ctx.title ? ` (“${ctx.title}”)` : ""}`);
-  if (ctx?.page) out.push(`The page showed:\n${ctx.page.split("\n").slice(0, 15).map((l) => `    ${l}`).join("\n")}`);
+  if (ctx?.url) out.push(`It ended on: ${ctx.url}${ctx.title ? ` (“${ctx.title}”)` : ""}`);
+  if (ctx?.page) out.push(`The page showed (its main part, or the open dialog):\n${ctx.page.split("\n").slice(0, 60).map((l) => `    ${l}`).join("\n")}`);
   if (ctx?.code) out.push(`${ctx.at ? `${ctx.at.file}:${ctx.at.line}` : "The code"}:\n${ctx.code.split("\n").slice(0, 12).map((l) => `    ${l}`).join("\n")}`);
   const v = values && Object.entries(values);
   if (v?.length) out.push(`Values it used: ${v.slice(0, 8).map(([k, x]) => `${k} = “${x}”`).join(", ")}`);
@@ -357,13 +357,14 @@ export function describeRun(run, origin) {
   const url = `${origin}${run.url}`;
   if (run.status === "running") return `Run #${run.number} is still running (${run.tests} test${run.tests === 1 ? "" : "s"}) — ${url}\nAsk again with qahub_results { run: ${run.number}, wait: true }.`;
   const lines = [`Run #${run.number} finished: ${run.passed} passed, ${run.failed} failed${run.skipped ? `, ${run.skipped} skipped` : ""}${run.browser ? ` (${run.browser}${run.durationSec ? `, ${run.durationSec} s` : ""})` : ""}${run.failed || run.verdict !== "pass" ? "" : " — all passed"} — ${url}`];
+  if (run.trial) lines.push("This was a try of a test that hasn't passed yet: it stays out of Results, and nobody is told. The first passing try goes into Results.");
   if (run.verdict === "stopped") lines.push(`It stopped before the end${run.stopReason ? `: ${run.stopReason}` : ""}.`);
   for (const f of run.failures ?? []) {
     lines.push(`- ${f.ref ?? "(deleted test)"} “${f.title}”${f.file ? ` (${f.file})` : ""} failed${f.failedStep ? ` at “${f.failedStep}”` : ""}${f.kind && KIND[f.kind] ? ` — ${KIND[f.kind]}` : ""}${f.since ? `; ${f.since}` : ""}.\n  ${f.error ?? "No error text."}${f.evidence?.length ? `\n  The app said: ${f.evidence.slice(0, 2).join(" | ")}` : ""}${whereItFailed(f.context, f.values)}`);
   }
   if (run.notRun?.length) lines.push(`Didn't run: ${run.notRun.slice(0, 20).map((x) => `${x.ref ?? "(deleted test)"} “${x.title}”${x.reason ? ` (${x.reason})` : ""}`).join("; ")}${run.notRun.length > 20 ? "; …" : ""}.`);
   if (run.flaky?.length) lines.push(`Flaky: ${run.flaky.map((x) => `${x.ref} “${x.title}”`).join(", ")} — passed only on the second try; find what makes it unreliable (a wait for the wrong thing, data left by an earlier test).`);
-  if (run.failed) lines.push("Next: for each failure decide whether the app is wrong (fix the app) or the test no longer matches the app (fix the test). Never make it pass by checking less or waiting longer. Then push and run again. The screenshot, video and trace are on the run page.");
+  if (run.failed) lines.push("Next: for each failure decide whether the app is wrong (fix the app) or the test no longer matches the app (fix the test). Never make it pass by checking less or waiting longer. A step that waited for something that never came: look where it ended and what the page showed, then read the app's code for the step before it (what that click or save really does — a redirect, a dialog, a different page) — find out, don't guess a new locator. If the test created something before it failed, check it was cleaned up (finally) and say if anything was left behind. Then push and run again. The video and trace are on the run page.");
   else if (run.skipped) lines.push("Skipped tests didn't run — usually because a test before them failed, or they have no recorded steps or stored file.");
   return lines.join("\n");
 }
@@ -476,13 +477,22 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     const end = Date.now() + waitMs;
     for (let misses = 0; ;) {
       let run;
-      try { ({ run } = await qa.call("GET", `/api/v1/projects/${p}/runs/${number}`)); misses = 0; } catch (e) {
+      try { ({ run } = await qa.call("GET", `/api/v1/projects/${p}/runs/${number}?shots=1`)); misses = 0; } catch (e) {
         if (number === "latest" || !["unreachable", "timeout", "server", "not_qahub"].includes(e.code)) throw e;
         if (++misses > 3) throw new QaHubError(`${e.message} Run #${number} was started and may still be going — read it later with qahub_results { run: ${number}, wait: true }. Don't start it again.`, e.code);
         await new Promise((r) => setTimeout(r, pollMs));
         continue;
       }
-      if (run.status !== "running" || !wait || Date.now() > end) return describeRun(run, qa.origin());
+      if (run.status !== "running" || !wait || Date.now() > end) {
+        const text = describeRun(run, qa.origin());
+        // Each failure's screenshot as an image Claude sees — what the person would see on the run page.
+        const shots = (run.failures ?? []).filter((f) => f.screenshot);
+        if (!shots.length) return text;
+        return { content: [{ type: "text", text }, ...shots.flatMap((f) => [
+          { type: "text", text: `${f.ref ?? f.title} — the screen when it failed:` },
+          { type: "image", data: f.screenshot.base64, mimeType: f.screenshot.type },
+        ])] };
+      }
       await new Promise((r) => setTimeout(r, pollMs));
     }
   };
@@ -689,8 +699,9 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         throw e;
       });
       // QA Hub found the same run already going (this call is a retry): it's that run, not a second one.
-      const said = run.alreadyStarted ? `Run #${run.number} was already started a moment ago (the same tests) — following it instead of starting another`
+      const said0 = run.alreadyStarted ? `Run #${run.number} was already started a moment ago (the same tests) — following it instead of starting another`
         : `Run #${run.number} started: ${run.tests} test${run.tests === 1 ? "" : "s"} on ${run.environment}`;
+      const said = run.trial ? `${said0} (a try — these tests haven't passed yet, so it stays out of Results until it passes)` : said0;
       if (!wait) return `${said} — ${qa.origin()}${run.url}\nRead it with qahub_results { run: ${run.number}, wait: true }.`;
       return follow(p, run.number, true);
     },
