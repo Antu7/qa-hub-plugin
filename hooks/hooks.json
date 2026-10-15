@@ -66,6 +66,20 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/review-check.mjs"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

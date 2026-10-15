@@ -162,7 +162,7 @@ test("speaks MCP over stdio: initialize, list the tools, call one", async () => 
   assert.equal((await answer(1)).result.serverInfo.name, "qahub");
   ask({ method: "notifications/initialized" });
   ask({ id: 2, method: "tools/list" });
-  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_knowledge", "qahub_code", "qahub_learn", "qahub_map", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look", "qahub_schedule"]);
+  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_knowledge", "qahub_code", "qahub_learn", "qahub_wait_review", "qahub_map", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look", "qahub_schedule"]);
   ask({ id: 3, method: "tools/call", params: { name: "qahub_status", arguments: {} } });
   assert.match((await answer(3)).result.content[0].text, /Connected to QA Hub/);
   } finally { child.kill(); }
@@ -347,7 +347,7 @@ test("qahub_plan: test cases before code; says whether a person reviews them; re
   planReview = true;
   said = await t.qahub_plan(plan);
   assert.match(said, /waiting for a person to approve in QA Hub[\s\S]*\/p\/freight\/tests/);
-  assert.match(said, /stop here/i);
+  assert.match(said, /qahub_wait_review \{ tests: \["TEST-00010"\] \}/); // it waits for the decision, then carries on
   planReview = false;
 });
 
@@ -818,3 +818,16 @@ test("one Stop answer: changed app code AND stale test words come back as one bl
   assert.equal(hooks.flatMap((h) => h.hooks).length, 1, "one Stop hook, not two");
 });
 
+
+test("plan review: approved, changes asked and rejected are told apart; still waiting says so", async () => {
+  const { decision, reviewWords } = await import("../server/index.mjs");
+  const st = { tests: new Map([["TEST-1", { ref: "TEST-1", title: "Delete an SDS", stage: "approved" }], ["TEST-2", { ref: "TEST-2", title: "Empty form", stage: "planned" }], ["TEST-3", { ref: "TEST-3", title: "Limits", stage: "planned" }]]),
+    changes: new Map([["TEST-3", { ref: "TEST-3", stage: "planned", request: { note: "use 12 characters" } }]]) };
+  const d = ["TEST-1", "TEST-2", "TEST-3", "TEST-4"].map((ref) => ({ ref, ...decision(st, ref) }));
+  assert.deepEqual(d.map((x) => x.state), ["approved", "waiting", "changes", "rejected"]);
+  const words = reviewWords(d, true);
+  assert.match(words, /Approved — write their code now.*TEST-1/);
+  assert.match(words, /TEST-3 “Limits”: changes asked — use 12 characters/);
+  assert.match(words, /Rejected \(removed\): TEST-4/);
+  assert.match(words, /Still waiting for: TEST-2/);
+});

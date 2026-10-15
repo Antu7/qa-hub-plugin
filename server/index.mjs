@@ -166,6 +166,15 @@ export const TOOLS = [
     } },
   },
   {
+    name: "qahub_wait_review",
+    description: "After qahub_plan says test cases wait for a person: wait here until each is decided in QA Hub — approved (write its code now), sent back with changes (plan it again with the change), or rejected (drop it) — then carry on by yourself. Tell the user first that you're waiting for their decision in QA Hub. Checks every few seconds, up to `minutes` (default 10).",
+    inputSchema: { type: "object", additionalProperties: false, required: ["tests"], properties: {
+      tests: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" }, description: "The refs waiting for review (TEST-00012)" },
+      minutes: { type: "integer", minimum: 1, maximum: 15 },
+      project: { type: "string", description: "Leave out to use the linked project" },
+    } },
+  },
+  {
     name: "qahub_map",
     description: "Map the app: send the WHOLE list of its modules (the feature areas a tester would name), so QA Hub knows every part of the app and shows what has no tests. Only organises — never tests or changes the app. Do it yourself, without asking, when qahub_gaps says the app isn't mapped: build the list from qahub_knowledge's page topics (\"page /address\") or the app's routes — one module per feature area (path = its page address), sub-pages with parent = the parent's path. Names stay plain (\"Customers\", \"Customer list\"). A first map is open to anyone who writes tests; mapping again is for admins and project managers.",
     inputSchema: { type: "object", additionalProperties: false, required: ["modules"], properties: {
@@ -512,7 +521,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const waiting = res.planned.filter((x) => x.stage === "planned").length;
       const ready = res.planned.length - waiting;
       const lines = [];
-      if (waiting) lines.push(`${waiting} test case${waiting === 1 ? "" : "s"} waiting for a person to approve in QA Hub: ${qa.origin()}/p/${p}/tests — they decide what “correct” is. Tell the user, and stop here for those tests: code for an unapproved plan is refused. Their answers show in qahub_gaps (changeRequests).`);
+      if (waiting) lines.push(`${waiting} test case${waiting === 1 ? "" : "s"} waiting for a person to approve in QA Hub: ${qa.origin()}/p/${p}/tests — they decide what “correct” is. Write the code for any approved ones first, then tell the user they're waiting in QA Hub and call qahub_wait_review { tests: [${res.planned.filter((x) => x.stage === "planned").map((x) => `"${x.ref}"`).join(", ")}] } — you carry on by yourself the moment they decide. Code for an unapproved plan is refused.`);
       if (ready) lines.push(`${ready} test case${ready === 1 ? "" : "s"} approved — write ${ready === 1 ? "its" : "their"} code now: each test("…") named exactly as planned, its test.step names equal to the planned steps.`);
       for (const x of res.planned) lines.push(`- ${x.ref} “${x.title}” in ${x.module} (${x.stage})`);
       // Already a test (it has code): its design was updated, not a new test — change ITS code and push it.
@@ -553,6 +562,19 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if ("text" in r) return r.text === null ? `${r.path}: ${r.note}` : `${r.path}${r.note ? ` (${r.note})` : ""}\n\n${r.text}`;
       if ("search" in r) return r.files.length ? `Files mentioning “${r.search}”:\n${r.files.join("\n")}` : `No file mentions “${r.search}”.`;
       return `${r.files.length} files${r.under ? ` in ${r.under}` : ""}${r.note ? ` — ${r.note}` : ""}:\n${r.files.join("\n")}`;
+    },
+
+    async qahub_wait_review({ tests: refs = [], minutes = 10, project } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      const end = Date.now() + Math.min(15, Math.max(1, minutes)) * 60_000;
+      for (;;) {
+        const st = await reviewState(qa, p);
+        const decided = refs.map((ref) => ({ ref, ...decision(st, ref) }));
+        const open = decided.filter((d) => d.state === "waiting");
+        if (!open.length || Date.now() > end) return reviewWords(decided, open.length > 0);
+        await new Promise((ok) => setTimeout(ok, 8_000));
+      }
     },
 
     async qahub_map({ modules, project } = {}) {
@@ -824,4 +846,28 @@ if (isMain(import.meta.url)) {
   const old = Number(process.versions.node.split(".")[0]) < 18;
   const refuse = async () => { throw new QaHubError(`QA Hub needs Node.js 18 or newer — this computer has ${process.version}. Install the current Node.js from nodejs.org, then restart Claude Code.`); };
   serve(process.stdin, process.stdout, old ? Object.fromEntries(TOOLS.map((t) => [t.name, refuse])) : tools());
+}
+
+// ---- plan review: what a person decided in QA Hub ---------------------------------------------------
+/** Each test's stage, and the changes a person asked for, as QA Hub has them now. */
+export async function reviewState(qa, p) {
+  const [proj, gaps] = await Promise.all([qa.call("GET", `/api/v1/projects/${p}`), qa.call("GET", `/api/v1/projects/${p}/gaps`).catch(() => ({}))]);
+  return { tests: new Map((proj.tests ?? []).map((t) => [t.ref, t])), changes: new Map((gaps.changeRequests ?? []).map((c) => [c.ref, c])) };
+}
+/** waiting | approved | changes | rejected (gone from the project) for one planned test. */
+export function decision(st, ref) {
+  const t = st.tests.get(ref);
+  if (!t) return { state: "rejected" };
+  const ch = st.changes.get(ref);
+  if (ch && t.stage === "planned") return { state: "changes", title: t.title, note: ch.request?.note ?? "" };
+  return t.stage === "planned" ? { state: "waiting", title: t.title } : { state: "approved", title: t.title };
+}
+export function reviewWords(decided, timedOut) {
+  const of = (s) => decided.filter((d) => d.state === s);
+  const lines = [];
+  if (of("approved").length) lines.push(`Approved — write their code now, push and run them: ${of("approved").map((d) => `${d.ref} “${d.title}”`).join(", ")}.`);
+  for (const d of of("changes")) lines.push(`${d.ref} “${d.title}”: changes asked — ${d.note || "see qahub_gaps"}. Plan it again with the change (qahub_plan), then wait again.`);
+  if (of("rejected").length) lines.push(`Rejected (removed): ${of("rejected").map((d) => d.ref).join(", ")} — don't write them.`);
+  if (timedOut) lines.push(`Still waiting for: ${of("waiting").map((d) => d.ref).join(", ")}. Tell the user; when they decide, you'll hear about it with their next message (or call qahub_wait_review again).`);
+  return lines.join("\n");
 }
