@@ -786,7 +786,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           throw new QaHubError(`${lost.map((m) => `Module “${m}”`).join(", ")} isn't in QA Hub, so ${lost.length === 1 ? "its tests" : "those tests"} would land in Inbox. QA Hub's modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}. Use one of those (the one for the page the test covers), or — if it's a part of the app QA Hub doesn't have yet — add it in the same push: modules: [{ name: "${lost[0]}", path: "/…", parent: "/…" }] (its URL path; parent only for a sub-page). Nothing was sent.`);
         }
       }
-      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(fewerChecks ? { fewerChecks } : {}) };
+      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
