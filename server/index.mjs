@@ -140,9 +140,10 @@ export const TOOLS = [
   },
   {
     name: "qahub_knowledge",
-    description: "What a Claude already learned about this app's code, kept in QA Hub for the whole team: pages and their source files, fields and their rules, messages, roles, flows — per topic (\"app\", or a module). Read it BEFORE reading the code: it's faster and saves your usage. Without topic: every topic and whether it's up to date (changed: files the code changed since — refresh those); with topic: that one in full.",
+    description: "What QA Hub knows about this app, kept for the whole team and filed like an index: under each module (its own topic — journey, fields and rules, test data that works, bugs — and its pages' topics), then overall (the code map, \"app\", pages in no module). Read it BEFORE the code: faster, and it saves your usage. Without arguments: the index, with whether each topic is up to date (changed: files the code changed since). module: everything filed under that module, in full — read only the module you work on. topic: one topic in full.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
-      topic: { type: "string", description: "\"app\" or a module name; leave out for the list" },
+      module: { type: "string", description: "A module's name (or address): its topics in full" },
+      topic: { type: "string", description: "One topic in full: a module's name, \"page /address\", \"app\"" },
       project: { type: "string", description: "Leave out to use the linked project" },
     } },
   },
@@ -249,6 +250,7 @@ export const TOOLS = [
           } },
         },
         remove: { type: "array", items: { type: "string" }, description: "Refs of tests to take out on purpose (they go to QA Hub's recycle bin) — e.g. a test deleted from its file. Never to get past a refusal." },
+        labels: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "description"], properties: { name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,29}$" }, description: { type: "string", maxLength: 200, description: "What the label means, in plain words a non-tester understands" } } }, description: "New labels a test of this push uses that qahub_project's Labels doesn't have — only when no existing label fits. An existing label is never changed here." },
         fewerChecks: { type: "string", minLength: 20, maxLength: 300, description: "ONLY when a check (expect) truly has to go because the app changed on purpose — the real reason. While a person has asked you to fix a test, a push that removes checks is refused without it; never use it to make a failing test pass" },
         modules: { type: "array", items: { type: "object", properties: { name: { type: "string" }, path: { type: "string" }, parent: { type: "string", description: "The parent module's path, for a sub-page (e.g. /quotes for /quotes/print)" } }, required: ["name", "path"] }, description: "Modules the app has that QA Hub doesn't yet (qahub_project lists what exists): each with its URL path and, for a sub-page, its parent's path. QA Hub adds them; it never renames an existing module." },
       },
@@ -378,7 +380,7 @@ export function describeProject(s, module) {
   if (module && !want) throw new QaHubError(`No module “${module}” in this project. Modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}.`);
   const kids = (parent) => s.modules.filter((m) => (m.parent ?? null) === parent);
   const tree = [];
-  const walk = (parent, depth) => { for (const m of kids(parent)) { tree.push(`${"  ".repeat(depth)}- ${m.name} (${m.path}) — ${m.tests ? `${m.tests} test${m.tests === 1 ? "" : "s"}` : "no tests yet"}`); if (depth < 6) walk(m.path, depth + 1); } };
+  const walk = (parent, depth) => { for (const m of kids(parent)) { tree.push(`${"  ".repeat(depth)}- ${m.name} (${m.path}) — ${m.tests ? `${m.tests} test${m.tests === 1 ? "" : "s"}` : "no tests yet"}${m.locked ? " — LOCKED by a person: never add, change or remove its tests" : ""}`); if (depth < 6) walk(m.path, depth + 1); } };
   walk(null, 0);
   // A module whose parent isn't in the list still shows (at the top).
   for (const m of s.modules) if (m.parent && !s.modules.some((x) => x.path === m.parent)) tree.push(`- ${m.name} (${m.path}) — ${m.tests} test(s)`);
@@ -409,13 +411,21 @@ export function describeProject(s, module) {
       .map((m) => `${m.name}: ${m.behaviours.map((b) => `${b.name} [${b.state}${b.priority === "high" ? ", high" : ""}]`).join("; ")}`).join("\n")}`]
       : ["Behaviours: none designed yet — qahub_design a module, then propose its behaviours with qahub_plan."]),
     `Sets (hand-picked, run in this order): ${s.sets?.length ? `\n${s.sets.map((x) => `- ${x.name}${x.description ? ` — ${x.description}` : ""}: ${x.tests.join(", ") || "empty"}`).join("\n")}` : "none"}. Every module and every tag is also a set of its own, automatically.`,
-    `Tags in use: ${s.tags?.join(", ") || "none"}.`,
+    describeLabels(s),
     `Spec folders: ${s.folders?.join(", ") || "none yet"}. Shared helpers: ${s.helpers?.join(", ") || "none yet"}.`,
     `Environments: ${s.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}.`,
     describeAccounts(s),
     describeVariables(s),
     `Tests (${s.tests.length}):\n${list.join("\n") || "none yet"}`,
   ].join("\n\n");
+}
+
+/** The project's labels (one shared list, like GitHub labels): what each means, so tests are tagged by meaning. */
+export function describeLabels(s) {
+  const labels = s.labels ?? (s.tags ?? []).map((name) => ({ name, description: "" }));
+  const head = "Labels — the project's one shared list of tags; tag every test with the ones whose meaning fits (pushed tests' tags). Use these names exactly; a new one only when none fits, sent in qahub_push labels with what it means in plain words";
+  if (!labels.length) return `${head}: none yet.`;
+  return [`${head}:`, ...labels.map((l) => `- ${l.name}${l.description ? ` — ${l.description}` : ""}${l.tests ? ` (${l.tests} test${l.tests === 1 ? "" : "s"})` : ""}`)].join("\n");
 }
 
 /** Who a test can sign in as: account names (what the code uses), their role and places. Never a username or password. */
@@ -440,6 +450,8 @@ export function describeVariables(s) {
 }
 
 const STATE = { proven: "proven", failing: "failing", weak: "weak", "not-run": "not run yet", planned: "planned", untested: "untested" };
+// Each topic's version as this session last read it in full (project + topic → updatedAt).
+const readAt = new Map();
 const RANK = { high: 0, medium: 1, low: 2 };
 /** A module's design, as Claude plans from it: behaviours by priority with their state, then the guide for its kinds. */
 export function describeDesign(d) {
@@ -542,27 +554,30 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       for (const d of res.behaviours?.dropped ?? []) lines.push(`“${d}” was dropped by a person — don't propose it again or test it.`);
       return lines.join("\n") || "Nothing planned.";
     },
-    async qahub_knowledge({ topic, project } = {}) {
+    async qahub_knowledge({ topic, module, project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
-      const t = String(topic ?? "").trim();
-      const { entries } = await qa.call("GET", `/api/v1/projects/${p}/knowledge${t ? `?topic=${encodeURIComponent(t)}` : ""}`);
+      const t = String(topic ?? "").trim(), m = String(module ?? "").trim();
+      const { entries, index } = await qa.call("GET", `/api/v1/projects/${p}/knowledge${t ? `?topic=${encodeURIComponent(t)}` : m ? `?module=${encodeURIComponent(m)}` : ""}`);
+      // The version of each topic read in full: a save of it carries this, so it never lands over a newer one.
+      if (t || m) for (const e of entries) readAt.set(`${p}\n${e.topic.toLowerCase()}`, e.updatedAt);
       const state = (e) => (e.upToDate ? "up to date" : e.changed ? `OUT OF DATE — changed since: ${e.changed.join(", ")}` : `can't tell if current (${e.unknown})`);
-      if (t) {
-        const e = entries[0];
-        return `${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
-      }
-      if (!entries.length) return "Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (topic \"app\" for the whole, or a module) so the next Claude doesn't have to.";
-      const pages = entries.filter((e) => e.topic.startsWith("page "));
-      const rest = entries.filter((e) => !e.topic.startsWith("page "));
-      const stale = pages.filter((e) => e.changed).map((e) => e.topic.slice(5));
-      return [
-        "What's known about this app (read a topic in full with qahub_knowledge { topic }):",
-        ...rest.map((e) => `- ${e.topic}: ${e.size} characters, ${state(e)}`),
-        ...(pages.length ? [`- ${pages.length} pages, one topic each — "page <address>": what a user sees there (labels, buttons, texts), the validation its forms enforce with the exact limits and error messages, the server calls, and the files behind it. Read the page you're testing first: its rules are your test data limits (variables) and its messages are what negative tests expect. Pages: ${pages.map((e) => e.topic.slice(5)).join(", ")}`] : []),
-        ...(stale.length ? [`- Pages whose code changed since: ${stale.join(", ")} — trust the code over their facts until QA Hub maps them again (within the hour).`] : []),
-        "Out of date: re-read just those files, then qahub_learn the topic again.",
-      ].join("\n");
+      const full = (e) => `## ${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
+      if (t) return full(entries[0]);
+      if (m) return entries.length ? entries.map(full).join("\n\n") : `Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
+      if (!entries.length) return "Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (a module's topic = its name; a page's = \"page /address\") so the next Claude doesn't have to.";
+      const by = new Map(entries.map((e) => [e.topic, e]));
+      const mark = (name) => { const e = by.get(name); return !e ? name : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
+      const lines = ["The index — read only the module you work on (qahub_knowledge { module }), or one topic (qahub_knowledge { topic }):"];
+      const walk = (ns, depth) => { for (const n of ns) { lines.push(`${"  ".repeat(depth)}- ${n.module} (${n.path}): ${n.topics.length ? n.topics.map(mark).join(" · ") : "nothing yet"}`); if (depth < 6) walk(n.modules, depth + 1); } };
+      walk(index?.modules ?? [], 0);
+      const overall = index?.overall ?? entries.map((e) => e.topic);
+      const pages = overall.filter((x) => x.startsWith("page "));
+      const rest = overall.filter((x) => !x.startsWith("page "));
+      lines.push(`Overall: ${rest.map((x) => `${x}${by.get(x)?.summary ? ` (${by.get(x).summary})` : ""}${by.get(x)?.changed ? " ⚠ out of date" : ""}`).join(" · ") || "nothing"}`);
+      if (pages.length) lines.push(`Pages in no module yet: ${pages.map((x) => x.slice(5)).join(", ")}`);
+      lines.push("A module's topic says its journey, fields and rules, where it shows, test data that works, values refused, bugs; a page's says what a user sees there and its validation. Out of date: re-read just those files, then save the topic again.");
+      return lines.join("\n");
     },
 
     async qahub_code({ path, search, under, project } = {}) {
@@ -598,7 +613,9 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     async qahub_learn({ topic, body, files, sha, project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
-      await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, body, files: files ?? [], ...(sha ? { sha } : {}) });
+      // basedOn: the version this session read ("new" if it never read it — then it must not exist yet). Recorded on
+      // reads only, so after any save — another helper's, or this one's — the topic is read again before the next save.
+      await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, body, files: files ?? [], ...(sha ? { sha } : {}), basedOn: readAt.get(`${p}\n${String(topic).toLowerCase()}`) ?? "new" });
       return `Saved “${topic}” — every teammate's Claude reads it now instead of the code.`;
     },
 
@@ -774,7 +791,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.call("POST", `/api/v1/projects/${p}/fixes/${test}`, { kind, note });
       return `Noted on ${test} in QA Hub. Now run it again: qahub_run { tests: ["${test}"] } — a pass marks it fixed.`;
     },
-    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [], variables = [], fewerChecks } = {}) {
+    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [], variables = [], labels = [], fewerChecks } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       const tests = given.map((t) => (typeof t?.file === "string" ? { ...t, file: t.file.replaceAll("\\", "/") } : t)); // a Windows path
@@ -786,7 +803,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           throw new QaHubError(`${lost.map((m) => `Module “${m}”`).join(", ")} isn't in QA Hub, so ${lost.length === 1 ? "its tests" : "those tests"} would land in Inbox. QA Hub's modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}. Use one of those (the one for the page the test covers), or — if it's a part of the app QA Hub doesn't have yet — add it in the same push: modules: [{ name: "${lost[0]}", path: "/…", parent: "/…" }] (its URL path; parent only for a sub-page). Nothing was sent.`);
         }
       }
-      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}) };
+      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {

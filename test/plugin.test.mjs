@@ -19,6 +19,7 @@ let planReview = false;
 const started = [];
 let polls = 0, blips = 0;
 const notes = [];
+const learned = [];
 let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } };
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
   failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time",
@@ -35,6 +36,12 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/me") return out(200, { user: { name: "Ana", email: "ana@acme.test" }, company: { name: "Acme", plan: "trial", active: KEYS[key], expiresAt: "2026-12-01T00:00:00.000Z" }, role: "owner", computer: { name: "MacBook", version: "0.9.21" } });
     if (!KEYS[key] && req.method === "POST") return out(402, { error: { code: "plan_expired", message: "Your QA Hub plan has ended." } });
     if (u.pathname === "/api/v1/projects") return out(200, { projects: [{ slug: "freight", name: "Freight portal" }] });
+    if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "GET") {
+      const q = { topic: "Quotes", body: "## Journey\n- open: /quotes (code)", files: [], sha: null, by: "Ana", updatedAt: "2026-10-17T06:00:00.123Z", upToDate: true, size: 30 };
+      if (u.searchParams.get("module")) return out(200, { entries: [q] });
+      return out(200, { entries: [{ ...q, body: undefined, summary: "open: /quotes" }], index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes"], modules: [] }], overall: [] } });
+    }
+    if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
     if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal",
       environments: [{ name: "Local", url: "http://localhost:3000", kind: "local" }],
       modules: [{ name: "Quotes", path: "/quotes", parent: null, tests: 1 }, { name: "Quote details", path: "/quotes/1", parent: "/quotes", tests: 0 }, { name: "Log in", path: "/login", parent: null, tests: 1 }],
@@ -256,7 +263,7 @@ test("qahub_project: the module tree, sets, tests, folders and helpers — what 
   const said = await t.qahub_project({});
   assert.match(said, /Modules[\s\S]*- Quotes \(\/quotes\) — 1 test\n  - Quote details \(\/quotes\/1\) — no tests yet\n- Log in \(\/login\) — 1 test/);
   assert.match(said, /Sets[\s\S]*Release check — Before every release: TEST-00004/);
-  assert.match(said, /Tags in use: smoke/);
+  assert.match(said, /Labels — the project.s one shared list[\s\S]*- smoke/);
   assert.match(said, /Shared helpers: tests\/helpers\/nav\.ts/);
   assert.match(said, /Quotes:\n  TEST-00004 “Save a quote” \(tests\/quotes\.spec\.ts\) @smoke — A rep saves a quote\./);
 });
@@ -860,4 +867,15 @@ test("keep going: Claude goes back to work until the tests it builds are done", 
   assert.equal(keepGoing(onlyWaiting, { n: 1, waits: MAX_WAIT }), null);
   assert.equal(keepGoing(onlyWaiting, { n: 1, waits: 0 })?.decision, "block");
   assert.equal(keepGoing(leftOf(tests, ["TEST-00004"]), { n: 0, waits: 0 }), null);
+});
+
+test("knowledge: the index first, a module in one call, and a save never lands over a newer version", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  assert.match(await t.qahub_knowledge({}), /Quotes \(\/quotes\): Quotes \(module topic: open: \/quotes\)/);
+  await t.qahub_learn({ topic: "Invoices", body: "## Journey\n- open: /invoices (code)", files: [] });
+  assert.equal(learned.at(-1).basedOn, "new", "never read: it must not exist yet");
+  await t.qahub_knowledge({ module: "Quotes" });
+  await t.qahub_learn({ topic: "quotes", body: "## Journey\n- open: /quotes (seen)", files: [] });
+  assert.equal(learned.at(-1).basedOn, "2026-10-17T06:00:00.123Z", "the version it read, whatever the capitals");
 });
