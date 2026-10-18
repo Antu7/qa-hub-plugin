@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
-import { appRoot, describeProject, describeRun, pathProblem, readAppFile, tools } from "../server/index.mjs";
+import { appRoot, describeProject, describeRun, pathProblem, readAppFile, tools, unprovenTests } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
@@ -878,4 +878,24 @@ test("knowledge: the index first, a module in one call, and a save never lands o
   await t.qahub_knowledge({ module: "Quotes" });
   await t.qahub_learn({ topic: "quotes", body: "## Journey\n- open: /quotes (seen)", files: [] });
   assert.equal(learned.at(-1).basedOn, "2026-10-17T06:00:00.123Z", "the version it read, whatever the capitals");
+});
+
+test("the recorder chat saves only proven tests: passed twice with this exact code, or marked a known app bug", async () => {
+  const { createHash } = await import("node:crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "qh-proof-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qh-app-"));
+  fs.mkdirSync(path.join(dir, "qahub"), { recursive: true });
+  const code = 'test("A", async () => {});\ntest("B", async () => {});';
+  fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code);
+  const sha = createHash("sha1").update(code).digest("hex");
+  const id = createHash("sha1").update(path.resolve(dir)).digest("hex").slice(0, 12);
+  fs.mkdirSync(path.join(home, ".qahub", "tries"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".qahub", "tries", `${id}.proof.json`), JSON.stringify({ "qahub/a.spec.ts#A": { sha, streak: 2 }, "qahub/a.spec.ts#B": { sha, streak: 1 } }));
+  const t = (title, extra = {}) => ({ file: "qahub/a.spec.ts", title, ...extra });
+  assert.deepEqual(unprovenTests(dir, [t("A")], home), []);
+  assert.deepEqual(unprovenTests(dir, [t("B")], home), [{ title: "B", why: "passed once, not twice" }]);
+  assert.deepEqual(unprovenTests(dir, [t("C")], home), [{ title: "C", why: "never tried" }]);
+  assert.deepEqual(unprovenTests(dir, [t("B", { knownBug: "the app accepts a bad email" })], home), []);
+  fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code + "\n// changed");
+  assert.deepEqual(unprovenTests(dir, [t("A")], home), [{ title: "A", why: "its code changed since it last passed" }]);
 });

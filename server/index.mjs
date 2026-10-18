@@ -2,6 +2,7 @@
 // The QA Hub MCP server inside the Claude Code plugin: newline-delimited JSON-RPC (MCP) on stdin/stdout.
 // No dependencies. Every tool checks the API key first (see qahub.mjs) — a revoked key or an ended plan
 // stops it within a minute, whatever the session already had.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -228,6 +229,7 @@ export const TOOLS = [
               applied: { type: "boolean", description: "true when this push applies the change request qahub_gaps listed for this test" },
               sets: { type: "array", items: { type: "string" }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
               distinctFrom: { type: "array", items: { type: "string" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
+              knownBug: { type: "string", maxLength: 300, description: "Only in the recorder chat, only for a test that checks the RIGHT behaviour and fails because the APP is wrong: what is wrong, in plain words. Such a test is saved tagged known-bug (the person sees it) — every other test must have passed twice in try_tests first. Tell the person too (\"Needs you: …\")." },
               data: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" }, value: { type: "string", maxLength: 500 }, variable: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$", description: "A project variable (qahub_project → Variables, or one you send in variables) that gives this value a NEW value every run; value stays the fallback" } } }, description: "The values the test types: name (lower_snake_case), default, and — for anything whose exact value doesn't decide what the test proves (names, titles, emails, amounts, dates, notes) — variable, so every run tries different data. The code reads them: const data = JSON.parse(process.env.QAHUB_DATA ?? \"{}\"); data.course_title ?? \"Fire safety basics\" — and checks the app shows data.course_title, never a hard-coded copy. A person's own choice (a value made fixed or linked elsewhere) survives your push. Leave out = unchanged" },
               runAs: { type: "string", description: "The test account this test starts signed in as — a name from qahub_project's Test accounts, chosen by ROLE for what the test proves (a permission test runs as the role that should, or shouldn't, be allowed). Leave out for the default account. Switching mid-test: await qahub.signInAs(page, \"<name>\"); a second person at the same time: const other = await qahub.as(\"<name>\") — a second signed-in page (take qahub from the test's fixtures), name written out" },
               needs: { type: "array", maxItems: 10, items: { type: "string" }, description: "ONLY when this test uses what another test makes (\"Delete the order\" needs \"Create an order\"): that test's ref or exact title (one in this push counts). It then runs first, and if it fails this test is skipped — every other test still runs. Leave out for an independent test (the normal case); [] removes a link" },
@@ -560,11 +562,15 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const t = String(topic ?? "").trim(), m = String(module ?? "").trim();
       const { entries, index } = await qa.call("GET", `/api/v1/projects/${p}/knowledge${t ? `?topic=${encodeURIComponent(t)}` : m ? `?module=${encodeURIComponent(m)}` : ""}`);
       // The version of each topic read in full: a save of it carries this, so it never lands over a newer one.
-      if (t || m) for (const e of entries) readAt.set(`${p}\n${e.topic.toLowerCase()}`, e.updatedAt);
+      if (t || m) for (const e of entries) if (e.body !== undefined) readAt.set(`${p}\n${e.topic.toLowerCase()}`, e.updatedAt); // only what was really read
       const state = (e) => (e.upToDate ? "up to date" : e.changed ? `OUT OF DATE — changed since: ${e.changed.join(", ")}` : `can't tell if current (${e.unknown})`);
       const full = (e) => `## ${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
       if (t) return full(entries[0]);
-      if (m) return entries.length ? entries.map(full).join("\n\n") : `Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
+      if (m) {
+        if (!entries.length) return `Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
+        const later = entries.filter((e) => e.more);
+        return [...entries.filter((e) => !e.more).map(full), ...(later.length ? [`More filed under ${m}, not shown to keep this short — read one when you need it with qahub_knowledge { topic }: ${later.map((e) => `“${e.topic}”${e.summary ? ` (${e.summary})` : ""}`).join(", ")}`] : [])].join("\n\n");
+      }
       if (!entries.length) return "Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (a module's topic = its name; a page's = \"page /address\") so the next Claude doesn't have to.";
       const by = new Map(entries.map((e) => [e.topic, e]));
       const mark = (name) => { const e = by.get(name); return !e ? name : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
@@ -803,6 +809,17 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           throw new QaHubError(`${lost.map((m) => `Module “${m}”`).join(", ")} isn't in QA Hub, so ${lost.length === 1 ? "its tests" : "those tests"} would land in Inbox. QA Hub's modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}. Use one of those (the one for the page the test covers), or — if it's a part of the app QA Hub doesn't have yet — add it in the same push: modules: [{ name: "${lost[0]}", path: "/…", parent: "/…" }] (its URL path; parent only for a sub-page). Nothing was sent.`);
         }
       }
+      // The recorder chat saves only what was proven: each test passed twice in try_tests with its code exactly as
+      // sent — or is marked a known app bug (tagged, so the person sees it). Refused here, before anything is sent.
+      if (process.env.QAHUB_CHAT && tests.length) {
+        const unproven = unprovenTests(root, tests);
+        if (unproven.length) throw new QaHubError(`Not proven yet: ${unproven.map((t) => `“${t.title}” (${t.why})`).join("; ")}. Try ${unproven.length === 1 ? "it" : "them"} with try_tests (repeat: 2) until ${unproven.length === 1 ? "it passes" : "they pass"} twice with this exact code — or, if one fails only because the APP is wrong, keep the right check and push it with knownBug: "<what's wrong>" and tell the person ("Needs you: …"). Nothing was sent.`);
+        for (const t of tests) if (t.knownBug) {
+          t.tags = [...new Set([...(t.tags ?? []), "known-bug"])];
+          t.description = `Known bug: ${String(t.knownBug).trim()}${t.description ? ` — ${t.description}` : ""}`.slice(0, 600);
+          delete t.knownBug;
+        }
+      }
       const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
@@ -826,6 +843,27 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       ].join("\n");
     },
   };
+}
+
+/**
+ * The tests in a push that haven't passed twice in try_tests with their file exactly as it is now (connector's
+ * try.mjs writes the proof beside the kept records: ~/.qahub/tries/<folder hash>.proof.json). Exported for its test.
+ */
+export function unprovenTests(root, tests, home = os.homedir()) {
+  let proof = {};
+  const id = createHash("sha1").update(path.resolve(root)).digest("hex").slice(0, 12);
+  try { proof = JSON.parse(fs.readFileSync(path.join(home, ".qahub", "tries", `${id}.proof.json`), "utf8")); } catch { /* never tried */ }
+  const out = [];
+  for (const t of tests) {
+    if (t.knownBug) continue;
+    let content = null;
+    try { content = fs.readFileSync(path.join(root, t.file), "utf8"); } catch { /* not on disk */ }
+    const p = proof[`${t.file}#${t.title}`];
+    const sha = content === null ? null : createHash("sha1").update(content).digest("hex");
+    const why = !p ? "never tried" : p.sha !== sha ? "its code changed since it last passed" : p.streak < 2 ? (p.streak === 1 ? "passed once, not twice" : "its last try failed") : null;
+    if (why) out.push({ title: t.title, why });
+  }
+  return out;
 }
 
 /** QA Hub's full answer for Claude to read — capped, so a big project can't flood the conversation. */
