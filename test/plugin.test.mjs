@@ -898,4 +898,9 @@ test("the recorder chat saves only proven tests: passed twice with this exact co
   assert.deepEqual(unprovenTests(dir, [t("B", { knownBug: "the app accepts a bad email" })], home), []);
   fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code + "\n// changed");
   assert.deepEqual(unprovenTests(dir, [t("A")], home), [{ title: "A", why: "its code changed since it last passed" }]);
+  // qahub 0.10.3+: the proof lives in the project's own folder (~/qa_hub/<project>/.qahub/proof.json) and wins.
+  fs.mkdirSync(path.join(dir, ".qahub"), { recursive: true });
+  const changed = createHash("sha1").update(code + "\n// changed").digest("hex");
+  fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: changed, streak: 2 } }));
+  assert.deepEqual(unprovenTests(dir, [t("A")], home), []);
 });

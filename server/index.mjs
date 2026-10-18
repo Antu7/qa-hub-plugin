@@ -851,8 +851,11 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
  */
 export function unprovenTests(root, tests, home = os.homedir()) {
   let proof = {};
+  // In the project's own folder (qahub 0.10.3+: ~/qa_hub/<project>/.qahub/proof.json); an older qahub kept it in ~/.qahub/tries.
   const id = createHash("sha1").update(path.resolve(root)).digest("hex").slice(0, 12);
-  try { proof = JSON.parse(fs.readFileSync(path.join(home, ".qahub", "tries", `${id}.proof.json`), "utf8")); } catch { /* never tried */ }
+  for (const f of [path.join(root, ".qahub", "proof.json"), path.join(home, ".qahub", "tries", `${id}.proof.json`)]) {
+    try { proof = JSON.parse(fs.readFileSync(f, "utf8")); break; } catch { /* not there */ }
+  }
   const out = [];
   for (const t of tests) {
     if (t.knownBug) continue;
