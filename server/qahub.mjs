@@ -55,7 +55,7 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
     return (base ??= serverUrl(String(server ?? "").trim() || DEFAULT_SERVER));
   };
   /** One request. `timeout` (ms) is longer for a push or a pull, which carry whole files. */
-  async function call(method, path, body, { timeout = timeoutMs } = {}) {
+  async function call(method, path, body, { timeout = timeoutMs, again = true } = {}) {
     const origin = ready();
     const slow = () => new QaHubError(`QA Hub at ${origin} didn't answer within ${Math.round(timeout / 1000)} s.`, "timeout");
     let res, text;
@@ -74,6 +74,12 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
     }
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* not QA Hub's JSON */ }
+    // A 404 or 5xx with no QA Hub explanation is QA Hub restarting or being updated — not "not found": one more try in
+    // a few seconds, then said as it is.
+    if (!res.ok && !json?.error && [404, 502, 503, 504].includes(res.status)) {
+      if (again) { await new Promise((r) => setTimeout(r, 3_000)); return call(method, path, body, { timeout, again: false }); }
+      throw new QaHubError(`QA Hub at ${origin} isn't answering properly right now (${res.status} — it may be restarting or updating). Nothing was saved; try again in a minute.`, "unavailable");
+    }
     if (!res.ok) throw explain(res.status, json, origin);
     // A page that answers but isn't QA Hub (a website, a login portal, a typo'd address) — never read as "no data".
     if (!json || typeof json !== "object") throw new QaHubError(`${origin} answered, but not like QA Hub does. Check the QA Hub address in the plugin settings (/plugin → qahub).`, "not_qahub");

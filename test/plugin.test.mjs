@@ -887,10 +887,11 @@ test("the recorder chat saves only proven tests: passed twice with this exact co
   fs.mkdirSync(path.join(dir, "qahub"), { recursive: true });
   const code = 'test("A", async () => {});\ntest("B", async () => {});';
   fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code);
-  const sha = createHash("sha1").update(code).digest("hex");
+  const { proofText } = await import("../server/index.mjs");
+  const shaOf = (src, title) => createHash("sha1").update(proofText(src, title)).digest("hex");
   const id = createHash("sha1").update(path.resolve(dir)).digest("hex").slice(0, 12);
   fs.mkdirSync(path.join(home, ".qahub", "tries"), { recursive: true });
-  fs.writeFileSync(path.join(home, ".qahub", "tries", `${id}.proof.json`), JSON.stringify({ "qahub/a.spec.ts#A": { sha, streak: 2 }, "qahub/a.spec.ts#B": { sha, streak: 1 } }));
+  fs.writeFileSync(path.join(home, ".qahub", "tries", `${id}.proof.json`), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code, "A"), streak: 2 }, "qahub/a.spec.ts#B": { sha: shaOf(code, "B"), streak: 1 } }));
   const t = (title, extra = {}) => ({ file: "qahub/a.spec.ts", title, ...extra });
   assert.deepEqual(unprovenTests(dir, [t("A")], home), []);
   assert.deepEqual(unprovenTests(dir, [t("B")], home), [{ title: "B", why: "passed once, not twice" }]);
@@ -900,7 +901,24 @@ test("the recorder chat saves only proven tests: passed twice with this exact co
   assert.deepEqual(unprovenTests(dir, [t("A")], home), [{ title: "A", why: "its code changed since it last passed" }]);
   // qahub 0.10.3+: the proof lives in the project's own folder (~/qa_hub/<project>/.qahub/proof.json) and wins.
   fs.mkdirSync(path.join(dir, ".qahub"), { recursive: true });
-  const changed = createHash("sha1").update(code + "\n// changed").digest("hex");
-  fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: changed, streak: 2 } }));
+  fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code + "\n// changed", "A"), streak: 2 } }));
   assert.deepEqual(unprovenTests(dir, [t("A")], home), []);
+  // Proof is per test: fixing B leaves A proven (only shared code — imports, setup — un-proves every test).
+  fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), (code + "\n// changed").replace('test("B", async () => {});', 'test("B", async () => { await fix(); });'));
+  assert.deepEqual(unprovenTests(dir, [t("A")], home), [], "A is untouched: still proven");
+  assert.deepEqual(unprovenTests(dir, [t("B")], home), [{ title: "B", why: "never tried" }]);
+});
+
+test("a bare 404 or 503 (QA Hub restarting) is tried once more, and said as it is — never 'not found'", async () => {
+  const { client } = await import("../server/qahub.mjs");
+  const page = (status) => ({ ok: false, status, text: async () => "<html>404</html>" });
+  const ok = { ok: true, status: 200, text: async () => JSON.stringify({ fine: true }) };
+  let n = 0;
+  const once = client({ key: "qh_live_test", server: "http://localhost:3100", fetchImpl: async () => (n++ === 0 ? page(404) : ok) });
+  assert.deepEqual(await once.call("GET", "/api/v1/projects"), { fine: true });
+  assert.equal(n, 2, "tried once more");
+  const down = client({ key: "qh_live_test", server: "http://localhost:3100", fetchImpl: async () => page(503) });
+  await assert.rejects(down.call("GET", "/api/v1/projects"), (e) => e.code === "unavailable" && /restarting or updating[\s\S]*Nothing was saved/.test(e.message));
+  const real = client({ key: "qh_live_test", server: "http://localhost:3100", fetchImpl: async () => ({ ok: false, status: 404, text: async () => JSON.stringify({ error: { code: "not_found", message: "Project not found" } }) }) });
+  await assert.rejects(real.call("GET", "/api/v1/projects/x"), (e) => e.code === "not_found" && e.message === "Project not found");
 });

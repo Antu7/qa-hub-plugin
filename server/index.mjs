@@ -849,6 +849,29 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
  * The tests in a push that haven't passed twice in try_tests with their file exactly as it is now (connector's
  * try.mjs writes the proof beside the kept records: ~/.qahub/tries/<folder hash>.proof.json). Exported for its test.
  */
+/**
+ * What a test's proof covers: its file with every OTHER test cut out — its own code and the file's shared code
+ * (imports, beforeEach, helpers at the top), not its neighbours'. Fixing one test no longer un-proves the rest of the
+ * file; changing shared code still does. The connector records proof the same way (qahub packages/cli/bin/try.mjs) — keep the two identical.
+ */
+export function proofText(src, title) {
+  const s = String(src);
+  // Where a test(...) call ends: its brackets matched, text in quotes skipped.
+  const endOf = (from) => {
+    for (let i = s.indexOf("(", from), depth = 0; i >= 0 && i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '"' || ch === "'" || ch === "`") { for (i++; i < s.length && s[i] !== ch; i++) if (s[i] === "\\") i++; continue; }
+      if (ch === "(") depth++;
+      else if (ch === ")" && --depth === 0) return s[i + 1] === ";" ? i + 2 : i + 1;
+    }
+    return s.length;
+  };
+  const heads = [...s.matchAll(/\btest(?:\.only)?\(\s*(["'`])((?:\\.|(?!\1).)+)\1/g)];
+  let out = s;
+  for (let i = heads.length - 1; i >= 0; i--) if (heads[i][2] !== title) out = out.slice(0, heads[i].index) + out.slice(endOf(heads[i].index));
+  return out;
+}
+
 export function unprovenTests(root, tests, home = os.homedir()) {
   let proof = {};
   // In the project's own folder (qahub 0.10.3+: ~/qa_hub/<project>/.qahub/proof.json); an older qahub kept it in ~/.qahub/tries.
@@ -862,7 +885,7 @@ export function unprovenTests(root, tests, home = os.homedir()) {
     let content = null;
     try { content = fs.readFileSync(path.join(root, t.file), "utf8"); } catch { /* not on disk */ }
     const p = proof[`${t.file}#${t.title}`];
-    const sha = content === null ? null : createHash("sha1").update(content).digest("hex");
+    const sha = content === null ? null : createHash("sha1").update(proofText(content, t.title)).digest("hex");
     const why = !p ? "never tried" : p.sha !== sha ? "its code changed since it last passed" : p.streak < 2 ? (p.streak === 1 ? "passed once, not twice" : "its last try failed") : null;
     if (why) out.push({ title: t.title, why });
   }
