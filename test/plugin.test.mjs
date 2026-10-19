@@ -928,4 +928,5 @@ test("Edit with AI: while one test is being edited, keep-going sends Claude back
   const line = (text) => JSON.stringify({ type: "user", message: { content: text } });
   assert.equal(editingRef([line("Test the companies page")].join("\n")), null);
   assert.equal(editingRef([line("[The person opened TEST-00041 “Delete the company” to change it with you."), line("[The person opened TEST-00073 “A company used by an SDS…” to change it with you.")].join("\n")), "TEST-00073", "the latest edit");
+  assert.equal(editingRef(line("[Auto-heal is checking TEST-00041 “Delete the company”: it failed in run #33")), "TEST-00041", "a heal is about one test too");
 });

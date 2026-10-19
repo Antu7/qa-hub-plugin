@@ -18,12 +18,13 @@ export function leftOf(tests, refs) {
 }
 
 /**
- * "Edit with AI" in QA Hub: the chat's message carries "[The person opened TEST-00073 “…” to change it" — while that
+ * "Edit with AI" in QA Hub ("[The person opened TEST-00073 “…” to change it") or an auto-heal chat ("[Auto-heal is checking
+ * TEST-00041 …") is about one test — while that
  * test is being edited, it's the only one Claude is sent back for (the chat's other unfinished tests wait).
  * ponytail: the latest edit in the session wins; a later message about other tests in that same chat isn't seen.
  */
 export function editingRef(transcript = "") {
-  return [...transcript.matchAll(/The person opened (TEST-\d{1,9}) /g)].at(-1)?.[1] ?? null;
+  return [...transcript.matchAll(/(?:The person opened|Auto-heal is checking) (TEST-\d{1,9}) /g)].at(-1)?.[1] ?? null;
 }
 
 /** The Stop answer, or null. `rounds`: { n, waits } this session so far. */
