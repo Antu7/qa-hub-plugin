@@ -10,7 +10,7 @@ import path from "node:path";
 import { isMain } from "../server/qahub.mjs";
 import { buildCheck } from "./build-check.mjs";
 import { staleCheck } from "./ui-change.mjs";
-import { keepGoing, leftOf } from "./keep-going.mjs";
+import { editingRef, keepGoing, leftOf } from "./keep-going.mjs";
 import { appRoot, building, reviewState } from "../server/index.mjs";
 import { client } from "../server/qahub.mjs";
 
@@ -40,7 +40,8 @@ function lastText(transcript) {
 /** Tests Claude is building here that aren't done: back to work (keep-going.mjs). Counted per session. */
 async function keepGoingCheck(input, transcript, roundsFile) {
   const root = appRoot(input.cwd || process.cwd());
-  const refs = building(root);
+  const focus = editingRef(transcript);
+  const refs = building(root).filter((r) => !focus || r === focus);
   if (!refs.length) return null;
   const project = JSON.parse(fs.readFileSync(path.join(root, "qahub.json"), "utf8")).project;
   if (!/^[a-z0-9-]{1,60}$/.test(project ?? "")) return null;

@@ -17,6 +17,15 @@ export function leftOf(tests, refs) {
   return out;
 }
 
+/**
+ * "Edit with AI" in QA Hub: the chat's message carries "[The person opened TEST-00073 “…” to change it" — while that
+ * test is being edited, it's the only one Claude is sent back for (the chat's other unfinished tests wait).
+ * ponytail: the latest edit in the session wins; a later message about other tests in that same chat isn't seen.
+ */
+export function editingRef(transcript = "") {
+  return [...transcript.matchAll(/The person opened (TEST-\d{1,9}) /g)].at(-1)?.[1] ?? null;
+}
+
 /** The Stop answer, or null. `rounds`: { n, waits } this session so far. */
 export function keepGoing(left, rounds, lastText = "") {
   if (/(^|\n)\s*\**needs you:/i.test(lastText)) return null;

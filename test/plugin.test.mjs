@@ -922,3 +922,10 @@ test("a bare 404 or 503 (QA Hub restarting) is tried once more, and said as it i
   const real = client({ key: "qh_live_test", server: "http://localhost:3100", fetchImpl: async () => ({ ok: false, status: 404, text: async () => JSON.stringify({ error: { code: "not_found", message: "Project not found" } }) }) });
   await assert.rejects(real.call("GET", "/api/v1/projects/x"), (e) => e.code === "not_found" && e.message === "Project not found");
 });
+
+test("Edit with AI: while one test is being edited, keep-going sends Claude back only for that test", async () => {
+  const { editingRef } = await import("../hooks/keep-going.mjs");
+  const line = (text) => JSON.stringify({ type: "user", message: { content: text } });
+  assert.equal(editingRef([line("Test the companies page")].join("\n")), null);
+  assert.equal(editingRef([line("[The person opened TEST-00041 “Delete the company” to change it with you."), line("[The person opened TEST-00073 “A company used by an SDS…” to change it with you.")].join("\n")), "TEST-00073", "the latest edit");
+});
