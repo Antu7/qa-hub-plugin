@@ -553,7 +553,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         const later = entries.filter((e) => e.more);
         return place + [...entries.filter((e) => !e.more).map(full), ...(later.length ? [`More filed under ${m}, not shown to keep this short — read one when you need it with qahub_knowledge { topic }: ${later.map((e) => `“${e.topic}”${e.summary ? ` (${e.summary})` : ""}`).join(", ")}`] : [])].join("\n\n");
       }
-      if (!entries.length) return `${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (a module's topic = its name; a page's = "page /address") so the next Claude doesn't have to.`;
+      if (!entries.length) return `${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn into the module's topic (topic = its name; "page /…" topics are QA Hub's, made from the code — it refuses saves to them) so the next Claude doesn't have to.`;
       const by = new Map(entries.map((e) => [e.topic, e]));
       const mark = (name) => { const e = by.get(name); return !e ? name : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
       const lines = ["The index — read only the module you work on (qahub_knowledge { module }), or one topic (qahub_knowledge { topic }):"];
@@ -564,7 +564,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const rest = overall.filter((x) => !x.startsWith("page "));
       lines.push(`Overall: ${rest.map((x) => `${x}${by.get(x)?.summary ? ` (${by.get(x).summary})` : ""}${by.get(x)?.changed ? " ⚠ out of date" : ""}`).join(" · ") || "nothing"}`);
       if (pages.length) lines.push(`Pages in no module yet: ${pages.map((x) => x.slice(5)).join(", ")}`);
-      lines.push("A module's topic says its journey, fields and rules, where it shows, test data that works, values refused, bugs; a page's says what a user sees there and its validation. Out of date: re-read just those files, then save the topic again.");
+      lines.push("A module's topic says its journey, fields and rules, where it shows, test data that works, values refused, bugs; a page's (QA Hub's, made from the code) says what a user sees there and its validation. A module topic out of date: re-read just those files, then save it again — what you saw on a page goes into its module's topic, never a “page /…” one.");
       return place + lines.join("\n");
     },
 
@@ -630,6 +630,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const titles = (src) => [...String(src).matchAll(/\btest(?:\.(?:only|skip|fixme))?\(\s*(["'`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2]);
       const eol = (x) => x.replace(/\r\n/g, "\n"); // a Windows checkout's line endings aren't a difference
       const added = [], replaced = [], same = [], differs = [], refused = [];
+      const got = {}; // QA Hub's sha of each file this folder now has exactly as QA Hub has it: the base of an edit here
       for (const f of Array.isArray(files) ? files : []) {
         const rel = String(f?.path ?? "");
         // QA Hub's own path rule, on the way OUT too: a bad row or a compromised server can't drop
@@ -651,16 +652,18 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
             want = f.content;
           }
           fs.mkdirSync(path.dirname(dest), { recursive: true });
-          if (!fs.existsSync(dest)) { fs.writeFileSync(dest, want); added.push(rel); continue; }
+          const sha = SHA256.test(f.sha ?? "") ? f.sha : sha256(want); // QA Hub's own, else the same hash of what it sent
+          if (!fs.existsSync(dest)) { fs.writeFileSync(dest, want); added.push(rel); got[rel] = sha; continue; }
           const local = fs.readFileSync(dest);
-          if (f.binary ? Buffer.compare(local, want) === 0 : eol(local.toString("utf8")) === eol(want)) { same.push(rel); continue; }
-          if (overwrite.includes(rel)) { fs.writeFileSync(dest, want); replaced.push(rel); continue; }
+          if (f.binary ? Buffer.compare(local, want) === 0 : eol(local.toString("utf8")) === eol(want)) { same.push(rel); got[rel] = sha; continue; }
+          if (overwrite.includes(rel)) { fs.writeFileSync(dest, want); replaced.push(rel); got[rel] = sha; continue; }
           if (f.binary) { differs.push(`${rel} — QA Hub has a different file`); continue; }
           const mine = titles(local.toString("utf8"));
           const theirs = titles(want).filter((x) => !mine.includes(x));
           differs.push(`${rel}${theirs.length ? ` — QA Hub's copy also has ${theirs.map((x) => `“${x}”`).join(", ")}` : ""}`);
         } catch (e) { refused.push(`${rel} (couldn't write it: ${e.code ?? e.message})`); }
       }
+      bases(root, got);
       return [
         `QA Hub's test files for ${p}: ${files.length}.`,
         ...(added.length ? [`Added: ${added.join(", ")}.`] : []),
@@ -775,6 +778,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           throw new QaHubError(`${lost.map((m) => `Module “${m}”`).join(", ")} isn't in QA Hub, so ${lost.length === 1 ? "its tests" : "those tests"} would land in Inbox. QA Hub's modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}. Use one of those (the one for the page the test covers), or — if it's a part of the app QA Hub doesn't have yet — add it in the same push: modules: [{ name: "${lost[0]}", path: "/…", parent: "/…" }] (its URL path; parent only for a sub-page). Nothing was sent.`);
         }
       }
+      // Passed twice on this computer with this exact code (try_tests): QA Hub counts them verified — no run of its own.
+      const proven = provenTests(root, tests);
       // The recorder chat saves only what was proven: each test passed twice in try_tests with its code exactly as
       // sent — or is marked a known app bug (tagged, so the person sees it). Refused here, before anything is sent.
       if (process.env.QAHUB_CHAT && tests.length) {
@@ -786,7 +791,9 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           delete t.knownBug;
         }
       }
-      const body = { files: files.map((f) => readAppFile(root, f)), tests, modules, ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}) };
+      // Each file's base: QA Hub's sha of the copy the edit here started from — a shared helper a teammate changed since is refused.
+      const base = bases(root);
+      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
@@ -795,13 +802,18 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       });
       const refs = res?.refs ?? [];
       building(root, refs.map((r) => r.ref));
+      bases(root, Object.fromEntries(body.files.map((x) => [x.path, sha256(x.base64 !== undefined ? Buffer.from(x.base64, "base64") : x.content)]))); // QA Hub has these now
+      const credited = Array.isArray(res?.credited) ? refs.filter((r) => res.credited.includes(r.ref)) : [];
+      const toRun = refs.filter((r) => !credited.includes(r));
       return [
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
         ...(res?.variables?.created?.length ? [`Variables created: ${res.variables.created.join(", ")} — each run now draws new values for the data linked to them.`] : []),
         ...(res?.variables?.alreadyThere?.length ? [`Already in QA Hub (kept as the person set them): ${res.variables.alreadyThere.join(", ")}.`] : []),
         ...(res?.modules?.added?.length ? [`Modules added: ${res.modules.added.map((m) => `${m.name} (${m.path})`).join(", ")}.`] : []),
         ...(res?.modules?.named ?? []).map((m) => `QA Hub calls ${m.path} “${m.qahub}” (you said “${m.yours}”) — use “${m.qahub}” from now on.`),
-        ...(refs.length ? [`Tests: ${refs.map((r) => `${r.ref} “${r.title}”${r.module ? ` in ${r.module}` : ""}`).join(", ")}.`, `Run them now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(refs.map((r) => r.ref))}, repeat: 2 }`] : []),
+        ...(refs.length ? [`Tests: ${refs.map((r) => `${r.ref} “${r.title}”${r.module ? ` in ${r.module}` : ""}`).join(", ")}.`] : []),
+        ...(credited.length ? [`Proven on this computer — passed twice with this exact code — so QA Hub counts ${credited.length === 1 ? "it" : "them"} as verified, no QA Hub run needed: ${credited.map((r) => r.ref).join(", ")}.`] : []),
+        ...(toRun.length ? [`Run ${credited.length ? "the rest" : "them"} now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(toRun.map((r) => r.ref))}, repeat: 2 }`] : []),
         ...refs.filter((r) => r.note).map((r) => `${r.ref}: ${r.note}.`),
         ...(res?.inbox?.length ? [`In Inbox (no module): ${res.inbox.join("; ")}.`] : []),
         ...(res?.removed?.length ? [`Moved to QA Hub's recycle bin: ${res.removed.join(", ")}.`] : []),
@@ -839,21 +851,45 @@ export function proofText(src, title) {
 }
 
 export function unprovenTests(root, tests) {
-  let proof = {};
-  // In the project's own folder: ~/qa_hub/<project>/.qahub/proof.json.
-  try { proof = JSON.parse(fs.readFileSync(path.join(root, ".qahub", "proof.json"), "utf8")); } catch { /* never tried */ }
-  const out = [];
-  for (const t of tests) {
-    if (t.knownBug) continue;
-    let content = null;
-    try { content = fs.readFileSync(path.join(root, t.file), "utf8"); } catch { /* not on disk */ }
-    const p = proof[`${t.file}#${t.title}`];
-    const sha = content === null ? null : createHash("sha1").update(proofText(content, t.title)).digest("hex");
-    const why = !p ? "never tried" : p.sha !== sha ? "its code changed since it last passed" : p.streak < 2 ? (p.streak === 1 ? "passed once, not twice" : "its last try failed") : null;
-    if (why) out.push({ title: t.title, why });
-  }
-  return out;
+  const proof = proofOf(root);
+  return tests.filter((t) => !t.knownBug).map((t) => ({ title: t.title, why: notProven(root, proof, t) })).filter((x) => x.why);
 }
+
+/** "file#title" of each test in a push that passed twice on this computer with its code as sent: QA Hub credits them. */
+export function provenTests(root, tests) {
+  const proof = proofOf(root);
+  return tests.filter((t) => !t.knownBug && !notProven(root, proof, t)).map((t) => `${t.file}#${t.title}`);
+}
+
+// In the project's own folder: ~/qa_hub/<project>/.qahub/proof.json.
+const proofOf = (root) => { try { return JSON.parse(fs.readFileSync(path.join(root, ".qahub", "proof.json"), "utf8")); } catch { return {}; } };
+/** Why a test isn't proven twice with its file as it is now, or null when it is. */
+function notProven(root, proof, t) {
+  let content = null;
+  try { content = fs.readFileSync(path.join(root, t.file), "utf8"); } catch { /* not on disk */ }
+  const p = proof[`${t.file}#${t.title}`];
+  const sha = content === null ? null : createHash("sha1").update(proofText(content, t.title)).digest("hex");
+  return !p ? "never tried" : p.sha !== sha ? "its code changed since it last passed" : p.streak < 2 ? (p.streak === 1 ? "passed once, not twice" : "its last try failed") : null;
+}
+
+/**
+ * QA Hub's sha of each file as this folder last got it (pulled, or pushed from here) — <root>/.qahub/pulled.json; the
+ * connector's sync writes the same file (packages/cli/bin/tests-home.mjs). `got` adds to it. Never throws.
+ */
+export function bases(root, got) {
+  const f = path.join(root, ".qahub", "pulled.json");
+  let have = {};
+  try { have = JSON.parse(fs.readFileSync(f, "utf8")); } catch { /* nothing pulled here yet */ }
+  if (got && Object.keys(got).length) try {
+    Object.assign(have, got);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    try { fs.writeFileSync(path.join(path.dirname(f), ".gitignore"), "*\n", { flag: "wx" }); } catch { /* there already */ } // never in the app's commits
+    fs.writeFileSync(f, JSON.stringify(have));
+  } catch { /* best effort */ }
+  return have;
+}
+const sha256 = (x) => createHash("sha256").update(x).digest("hex");
+const SHA256 = /^[0-9a-f]{64}$/;
 
 /** QA Hub's full answer for Claude to read — capped, so a big project can't flood the conversation. */
 function capped(x, max = 6_000) {

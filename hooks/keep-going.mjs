@@ -1,7 +1,7 @@
 // Keep going: Claude is about to stop while tests it is building in this folder aren't done — waiting for review,
 // approved with no code, or not passed twice yet. It goes back to work with what's left, round after round, until
 // each is done. It stops when it needs the person ("Needs you:"), after MAX rounds, or when waiting alone has
-// taken an hour (the person may be away).
+// taken an hour (the person may be away). Never in the recorder chat (stop.mjs): it has its own loop and caps.
 export const MAX = 15, MAX_WAIT = 4;
 
 /** What is left of the tests being built: { waiting, write, fix }, from the project's tests by ref. */
@@ -18,17 +18,12 @@ export function leftOf(tests, refs) {
 }
 
 /**
- * "Edit with AI" in QA Hub ("[The person opened TEST-00073 “…” to change it") or an auto-heal chat ("[Auto-heal is checking
- * TEST-00041 …") is about one test — while that
- * test is being edited, it's the only one Claude is sent back for (the chat's other unfinished tests wait).
- * ponytail: the latest edit in the session wins; a later message about other tests in that same chat isn't seen.
+ * The Stop answer, or null. `rounds`: { n, waits } this session so far. `active` (stop_hook_active): Claude is already
+ * carrying on because a Stop hook sent it back — it goes on only in rounds this hook counted, so it ends by MAX; another
+ * hook's send-back is never extended. ponytail: counted per session, not per chain.
  */
-export function editingRef(transcript = "") {
-  return [...transcript.matchAll(/(?:The person opened|Auto-heal is checking) (TEST-\d{1,9}) /g)].at(-1)?.[1] ?? null;
-}
-
-/** The Stop answer, or null. `rounds`: { n, waits } this session so far. */
-export function keepGoing(left, rounds, lastText = "") {
+export function keepGoing(left, rounds, lastText = "", active = false) {
+  if (active && !(rounds.n > 0)) return null;
   if (/(^|\n)\s*\**needs you:/i.test(lastText)) return null;
   const working = left.write.length + left.fix.length;
   if (!working && !left.waiting.length) return null;

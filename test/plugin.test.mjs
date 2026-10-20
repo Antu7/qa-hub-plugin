@@ -89,7 +89,8 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/projects/freight/runs/8") return out(200, ++polls < 2 ? { run: { number: 8, status: "running", tests: 2, url: "/p/freight/runs/8" } } : failedRun);
     if (u.pathname === "/api/v1/projects/freight/runs/latest") return out(200, latest);
     if (u.pathname === "/api/v1/projects/freight/gaps") return out(200, { behaviours: { untested: [{ module: "Quotes", name: "Delete a quote", kind: "delete", priority: "high" }], failing: [], weak: [{ module: "Quotes", name: "Search quotes", kind: "search", priority: "low", tests: ["TEST-00007"] }], notDesigned: ["Wishlist"] }, untested: [{ module: "Quotes", path: "/quotes" }] });
-    if (u.pathname === "/api/v1/projects/freight/tests" && req.method === "POST") { pushed.push(JSON.parse(b)); return out(200, { files: 1, tests: 1, refs: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", module: "Quotes" }], modules: { added: [], named: [] }, inbox: [] }); }
+    if (u.pathname === "/api/v1/projects/freight/tests" && req.method === "POST") { pushed.push(JSON.parse(b)); return out(200, { files: 1, tests: 1, refs: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", module: "Quotes" }], modules: { added: [], named: [] }, inbox: [],
+      ...(JSON.parse(b).proven?.includes("tests/quotes.spec.ts#Save a quote") ? { credited: ["TEST-00004"] } : {}) }); }
     return out(404, { error: { code: "not_found", message: "Project not found" } });
   });
 });
@@ -907,10 +908,56 @@ test("a bare 404 or 503 (QA Hub restarting) is tried once more, and said as it i
   await assert.rejects(real.call("GET", "/api/v1/projects/x"), (e) => e.code === "not_found" && e.message === "Project not found");
 });
 
-test("Edit with AI: while one test is being edited, keep-going sends Claude back only for that test", async () => {
-  const { editingRef } = await import("../hooks/keep-going.mjs");
-  const line = (text) => JSON.stringify({ type: "user", message: { content: text } });
-  assert.equal(editingRef([line("Test the companies page")].join("\n")), null);
-  assert.equal(editingRef([line("[The person opened TEST-00041 “Delete the company” to change it with you."), line("[The person opened TEST-00073 “A company used by an SDS…” to change it with you.")].join("\n")), "TEST-00073", "the latest edit");
-  assert.equal(editingRef(line("[Auto-heal is checking TEST-00041 “Delete the company”: it failed in run #33")), "TEST-00041", "a heal is about one test too");
+test("keep going never extends another hook's send-back, and never runs in the recorder chat (it has its own loop)", async () => {
+  const { keepGoing } = await import("../hooks/keep-going.mjs");
+  const left = { waiting: [], write: [{ ref: "TEST-00006", title: "Hazardous SDS" }], fix: [] };
+  assert.equal(keepGoing(left, { n: 0, waits: 0 }, "", true), null, "stop_hook_active, no round of its own: not ours");
+  assert.equal(keepGoing(left, { n: 2, waits: 0 }, "", true)?.decision, "block", "its own rounds go on, up to MAX");
+  const { keepGoingCheck } = await import("../hooks/stop.mjs");
+  const { building } = await import("../server/index.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qh-chat-"));
+  fs.writeFileSync(path.join(root, "qahub.json"), JSON.stringify({ project: "freight" }));
+  building(root, ["TEST-00006"]);
+  assert.equal(await keepGoingCheck({ cwd: root }, "", path.join(root, "rounds.json"), { QAHUB_CHAT: "1" }), null);
+});
+
+test("push: tests proven twice on this computer go as proven; QA Hub's credit means no QA Hub run is asked for", async () => {
+  const { createHash } = await import("node:crypto");
+  const { proofText } = await import("../server/index.mjs");
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  const code = "import { test } from '@playwright/test';\ntest('Save a quote', async () => {});\n";
+  fs.writeFileSync(path.join(app, "tests/quotes.spec.ts"), code);
+  fs.mkdirSync(path.join(app, ".qahub"), { recursive: true });
+  fs.writeFileSync(path.join(app, ".qahub", "proof.json"), JSON.stringify({ "tests/quotes.spec.ts#Save a quote": { sha: createHash("sha1").update(proofText(code, "Save a quote")).digest("hex"), streak: 2 } }));
+  try {
+    const sent = await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
+    assert.deepEqual(pushed.at(-1).proven, ["tests/quotes.spec.ts#Save a quote"]);
+    assert.match(sent, /Proven on this computer[^\n]*no QA Hub run needed: TEST-00004/);
+    assert.doesNotMatch(sent, /qahub_run/);
+  } finally {
+    fs.rmSync(path.join(app, ".qahub"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(app, "tests/quotes.spec.ts"), "import { test } from '@playwright/test';\n");
+  }
+});
+
+test("push sends each file's base — QA Hub's sha of the copy it was pulled as — and its own push becomes the next base", async () => {
+  const { createHash } = await import("node:crypto");
+  const sha = (x) => createHash("sha256").update(x).digest("hex");
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  fs.rmSync(path.join(app, "tests/helpers"), { recursive: true, force: true });
+  try {
+    await t.qahub_pull({});
+    const pulled = "export const nav = 1;\n";
+    fs.writeFileSync(path.join(app, "tests/helpers/nav.ts"), "export const nav = 2;\n");
+    await t.qahub_push({ files: ["tests/helpers/nav.ts", "tests/quotes.spec.ts"] });
+    assert.equal(pushed.at(-1).files[0].base, sha(pulled), "the helper's base: the copy it was pulled as");
+    assert.equal(pushed.at(-1).files[1].base, undefined, "a file never pulled here has none");
+    await t.qahub_push({ files: ["tests/helpers/nav.ts"] });
+    assert.equal(pushed.at(-1).files[0].base, sha("export const nav = 2;\n"), "after a push, QA Hub has this copy");
+  } finally {
+    fs.rmSync(path.join(app, ".qahub"), { recursive: true, force: true });
+    fs.rmSync(path.join(app, "tests/helpers"), { recursive: true, force: true });
+  }
 });
