@@ -3,10 +3,8 @@
 // linked to QA Hub, and no tests were pushed since, it is sent back ONCE in the session — to write tests for what
 // it built, or to say in one line why the change needs none. Never loops (stop_hook_active), never blocks on errors.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { appRoot } from "../server/index.mjs";
-import { isMain } from "../server/qahub.mjs";
 import { isTestFile } from "./test-checklist.mjs";
 
 // App code a user can see the effect of. Not tests, docs, config, lock files, styles alone or generated output.
@@ -43,18 +41,4 @@ export function buildCheck(input, transcript, seen) {
   try { fs.writeFileSync(seen, "", { flag: "wx" }); } catch { return null; } // already asked this session
   const list = files.slice(0, 6).join(", ") + (files.length > 6 ? `, and ${files.length - 6} more` : "");
   return { decision: "block", reason: `You changed the app (${list}) and no tests went to QA Hub. If a user can see this change, write tests for it now with the qahub:write-tests skill — look, plan, push, run. If they can't (a refactor, config, styling only), say so in one line and stop.` };
-}
-
-if (isMain(import.meta.url)) {
-  let raw = "";
-  process.stdin.on("data", (c) => (raw += c));
-  process.stdin.on("end", () => {
-    try {
-      const input = JSON.parse(raw || "{}");
-      const transcript = input.transcript_path ? fs.readFileSync(input.transcript_path, "utf8") : "";
-      const id = String(input.session_id ?? "nosession").replace(/[^\w-]/g, "").slice(0, 80);
-      const out = buildCheck(input, transcript, path.join(os.tmpdir(), `qahub-build-${id}`));
-      if (out) process.stdout.write(JSON.stringify(out));
-    } catch { /* never block */ }
-  });
 }

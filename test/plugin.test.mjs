@@ -13,7 +13,6 @@ import { appRoot, describeProject, describeRun, pathProblem, readAppFile, tools,
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
 const pushed = [];
-const scheduled = [];
 const planned = [];
 let planReview = false;
 const started = [];
@@ -68,10 +67,6 @@ const server = http.createServer((req, res) => {
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
       { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
-    if (u.pathname === "/api/v1/projects/freight/schedules" && req.method === "GET") return out(200, { schedules: [{ name: "Nightly", when: "Weekdays at 02:00 (Asia/Dhaka)", what: "Release check", where: "computer", enabled: true, nextAt: "2026-10-14T20:00:00.000Z", owner: "Ana", last: { status: "failed", detail: "Connect your computer first", run: null } }] });
-    if (u.pathname === "/api/v1/projects/freight/schedules" && req.method === "POST") { const body = JSON.parse(b); scheduled.push(body);
-      return body.action === "create" ? out(200, { name: body.name, when: "Every 4 hours from 08:00, weekdays (UTC)", what: "Tag smoke", nextAt: "2026-10-14T08:00:00.000Z" })
-        : body.name === "Nope" ? out(404, { error: { code: "not_found", message: "No schedule called “Nope” in this project" } }) : out(200, { ok: true }); }
     if (u.pathname === "/api/v1/projects/freight/look" && req.method === "POST") { const body = JSON.parse(b); return body.path === "/broken"
       ? out(200, { status: "failed", error: "Couldn't open /broken. Is your app running?" })
       : out(200, { status: "done", look: { url: `http://localhost:5174${body.path}`, title: "Quotes", snapshot: '- heading "Quotes" [level=1]\n- button "New quote"', shot: PNG.toString("base64"), errors: ["TypeError: x is undefined"] } }); }
@@ -170,7 +165,7 @@ test("speaks MCP over stdio: initialize, list the tools, call one", async () => 
   assert.equal((await answer(1)).result.serverInfo.name, "qahub");
   ask({ method: "notifications/initialized" });
   ask({ id: 2, method: "tools/list" });
-  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_knowledge", "qahub_code", "qahub_learn", "qahub_wait_review", "qahub_map", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look", "qahub_schedule"]);
+  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_knowledge", "qahub_code", "qahub_learn", "qahub_wait_review", "qahub_map", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look"]);
   ask({ id: 3, method: "tools/call", params: { name: "qahub_status", arguments: {} } });
   assert.match((await answer(3)).result.content[0].text, /Connected to QA Hub/);
   } finally { child.kill(); }
@@ -726,19 +721,6 @@ test("after building: app code changed and nothing pushed — Claude is sent bac
   assert.equal(buildCheck({ ...input, cwd: other }, line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(other, "src/a.ts") } }] } }), fresh()), null, "only in a folder linked to QA Hub");
 });
 
-test("qahub_schedule: lists scheduled runs in words; creates one in the person's own time zone; on/off/delete by name", async () => {
-  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
-  const t = as("qh_good");
-  assert.match(await t.qahub_schedule({ action: "list" }), /Nightly — Weekdays at 02:00 \(Asia\/Dhaka\) · Release check · on[\s\S]*last time it didn't start: Connect your computer first/);
-  const made = await t.qahub_schedule({ action: "create", name: "Smoke every 4h", tag: "smoke", days: ["mon", "tue", "wed", "thu", "fri"], time: "08:00", everyHours: 4, where: "server" });
-  assert.match(made, /Scheduled “Smoke every 4h”: Every 4 hours from 08:00, weekdays \(UTC\)/);
-  assert.equal(scheduled.at(-1).timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
-  assert.equal(scheduled.at(-1).tag, "smoke");
-  assert.match(await t.qahub_schedule({ action: "off", name: "Smoke every 4h" }), /off/);
-  await assert.rejects(t.qahub_schedule({ action: "delete", name: "Nope" }), /No schedule called/);
-  await assert.rejects(t.qahub_schedule({ action: "create", name: "x", tag: "smoke" }), /time/);
-});
-
 test("you changed what a test uses (plan auto-heal Phase 1): an edit that removes words tests still look for says which lines, and Claude can't finish while they still do", async () => {
   const { removedWords, uiChange, staleCheck } = await import("../hooks/ui-change.mjs");
   // The words an edit takes out of the app: text, labels, test ids — not ones it keeps or only moves.
@@ -887,31 +869,28 @@ test("knowledge: the index first, a module in one call, and a save never lands o
 
 test("the recorder chat saves only proven tests: passed twice with this exact code, or marked a known app bug", async () => {
   const { createHash } = await import("node:crypto");
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "qh-proof-"));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qh-app-"));
   fs.mkdirSync(path.join(dir, "qahub"), { recursive: true });
   const code = 'test("A", async () => {});\ntest("B", async () => {});';
   fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code);
   const { proofText } = await import("../server/index.mjs");
   const shaOf = (src, title) => createHash("sha1").update(proofText(src, title)).digest("hex");
-  const id = createHash("sha1").update(path.resolve(dir)).digest("hex").slice(0, 12);
-  fs.mkdirSync(path.join(home, ".qahub", "tries"), { recursive: true });
-  fs.writeFileSync(path.join(home, ".qahub", "tries", `${id}.proof.json`), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code, "A"), streak: 2 }, "qahub/a.spec.ts#B": { sha: shaOf(code, "B"), streak: 1 } }));
-  const t = (title, extra = {}) => ({ file: "qahub/a.spec.ts", title, ...extra });
-  assert.deepEqual(unprovenTests(dir, [t("A")], home), []);
-  assert.deepEqual(unprovenTests(dir, [t("B")], home), [{ title: "B", why: "passed once, not twice" }]);
-  assert.deepEqual(unprovenTests(dir, [t("C")], home), [{ title: "C", why: "never tried" }]);
-  assert.deepEqual(unprovenTests(dir, [t("B", { knownBug: "the app accepts a bad email" })], home), []);
-  fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code + "\n// changed");
-  assert.deepEqual(unprovenTests(dir, [t("A")], home), [{ title: "A", why: "its code changed since it last passed" }]);
-  // qahub 0.10.3+: the proof lives in the project's own folder (~/qa_hub/<project>/.qahub/proof.json) and wins.
+  // The proof lives in the project's own folder (~/qa_hub/<project>/.qahub/proof.json).
   fs.mkdirSync(path.join(dir, ".qahub"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code, "A"), streak: 2 }, "qahub/a.spec.ts#B": { sha: shaOf(code, "B"), streak: 1 } }));
+  const t = (title, extra = {}) => ({ file: "qahub/a.spec.ts", title, ...extra });
+  assert.deepEqual(unprovenTests(dir, [t("A")]), []);
+  assert.deepEqual(unprovenTests(dir, [t("B")]), [{ title: "B", why: "passed once, not twice" }]);
+  assert.deepEqual(unprovenTests(dir, [t("C")]), [{ title: "C", why: "never tried" }]);
+  assert.deepEqual(unprovenTests(dir, [t("B", { knownBug: "the app accepts a bad email" })]), []);
+  fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code + "\n// changed");
+  assert.deepEqual(unprovenTests(dir, [t("A")]), [{ title: "A", why: "its code changed since it last passed" }]);
   fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code + "\n// changed", "A"), streak: 2 } }));
-  assert.deepEqual(unprovenTests(dir, [t("A")], home), []);
+  assert.deepEqual(unprovenTests(dir, [t("A")]), []);
   // Proof is per test: fixing B leaves A proven (only shared code — imports, setup — un-proves every test).
   fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), (code + "\n// changed").replace('test("B", async () => {});', 'test("B", async () => { await fix(); });'));
-  assert.deepEqual(unprovenTests(dir, [t("A")], home), [], "A is untouched: still proven");
-  assert.deepEqual(unprovenTests(dir, [t("B")], home), [{ title: "B", why: "never tried" }]);
+  assert.deepEqual(unprovenTests(dir, [t("A")]), [], "A is untouched: still proven");
+  assert.deepEqual(unprovenTests(dir, [t("B")]), [{ title: "B", why: "never tried" }]);
 });
 
 test("a bare 404 or 503 (QA Hub restarting) is tried once more, and said as it is — never 'not found'", async () => {

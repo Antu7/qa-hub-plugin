@@ -321,26 +321,6 @@ export const TOOLS = [
       },
     },
   },
-  {
-    name: "qahub_schedule",
-    description: "Scheduled runs: QA Hub starts a run by itself — on these days at a time, every few hours, or monthly — as the person, on their computer (it must be on then) or on QA Hub's test computers (where: \"server\"). action list: what's scheduled and how it last went. create: name + what to run (one of set, tag, module, tests) + when (time, and days / everyHours / monthDay); the person's own time zone is used. on / off / delete: by name. Create one only when the person asks for it.",
-    inputSchema: {
-      type: "object", additionalProperties: false, required: ["action"],
-      properties: {
-        action: { type: "string", enum: ["list", "create", "on", "off", "delete"] },
-        name: { type: "string", maxLength: 80, description: "The schedule's name (unique in the project)" },
-        set: { type: "string", description: "A set's name" }, tag: { type: "string" }, module: { type: "string" },
-        tests: { type: "array", items: { type: "string" }, description: "Test refs, e.g. [\"TEST-00012\"]" },
-        time: { type: "string", description: "HH:MM, 24-hour — the time, or the start time for everyHours" },
-        days: { type: "array", items: { type: "string", enum: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }, description: "Leave out for every day" },
-        everyHours: { type: "integer", enum: [1, 2, 3, 4, 6, 8, 12], description: "Repeat every N hours from time until midnight, on those days" },
-        monthDay: { type: "integer", minimum: -1, maximum: 31, description: "Monthly on this day (-1 = the last day) instead of days" },
-        environment: { type: "string" }, browser: { type: "string", enum: ["chrome", "firefox", "webkit", "edge"] },
-        where: { type: "string", enum: ["computer", "server"], description: "computer (default): the person's own; server: QA Hub's test computers" },
-        project: { type: "string", description: "Leave out to use the linked project" },
-      },
-    },
-  },
 ];
 
 const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)",
@@ -760,22 +740,6 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       }
       return { content };
     },
-    async qahub_schedule({ project, action, ...rest } = {}) {
-      await qa.whoami();
-      const p = projectOf(project);
-      if (action === "list") {
-        const { schedules } = await qa.call("GET", `/api/v1/projects/${p}/schedules`);
-        if (!schedules.length) return "Nothing is scheduled in this project.";
-        return schedules.map((s) => `- ${s.name} — ${s.when} · ${s.what} · ${s.enabled ? "on" : "off"}${s.where === "server" ? " · on QA Hub's test computers" : ` · on ${s.owner}'s computer`}${s.enabled && s.nextAt ? ` · next ${s.nextLocal ?? s.nextAt}` : ""}${s.last ? ` · last time ${s.last.status === "started" ? `it ran (run #${s.last.run})` : s.last.status === "missed" ? "it was missed" : `it didn't start: ${s.last.detail}`}` : ""}`).join("\n");
-      }
-      if (action === "create") {
-        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(rest.time ?? ""))) throw new QaHubError("Say the time as HH:MM (24-hour), e.g. time: \"02:00\".");
-        const made = await qa.call("POST", `/api/v1/projects/${p}/schedules`, { action, ...rest, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-        return `Scheduled “${made.name}”: ${made.when} · ${made.what}. Next run ${made.nextLocal ?? made.nextAt}. It runs as the person${rest.where === "server" ? " on QA Hub's test computers" : " on their computer, which has to be on and connected then"}; if a run can't start, QA Hub's bell says why.`;
-      }
-      await qa.call("POST", `/api/v1/projects/${p}/schedules`, { action, name: rest.name });
-      return action === "delete" ? `Deleted the schedule “${rest.name}”. Runs it made stay in Results.` : `“${rest.name}” is ${action === "on" ? "on" : "off"}.`;
-    },
     async qahub_look({ project, path, environment } = {}) {
       await qa.whoami();
       const p = projectOf(project);
@@ -849,7 +813,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
 
 /**
  * The tests in a push that haven't passed twice in try_tests with their file exactly as it is now (connector's
- * try.mjs writes the proof beside the kept records: ~/.qahub/tries/<folder hash>.proof.json). Exported for its test.
+ * try.mjs writes the proof beside the kept records: ~/qa_hub/<project>/.qahub/proof.json). Exported for its test.
  */
 /**
  * What a test's proof covers: its file with every OTHER test cut out — its own code and the file's shared code
@@ -874,13 +838,10 @@ export function proofText(src, title) {
   return out;
 }
 
-export function unprovenTests(root, tests, home = os.homedir()) {
+export function unprovenTests(root, tests) {
   let proof = {};
-  // In the project's own folder (qahub 0.10.3+: ~/qa_hub/<project>/.qahub/proof.json); an older qahub kept it in ~/.qahub/tries.
-  const id = createHash("sha1").update(path.resolve(root)).digest("hex").slice(0, 12);
-  for (const f of [path.join(root, ".qahub", "proof.json"), path.join(home, ".qahub", "tries", `${id}.proof.json`)]) {
-    try { proof = JSON.parse(fs.readFileSync(f, "utf8")); break; } catch { /* not there */ }
-  }
+  // In the project's own folder: ~/qa_hub/<project>/.qahub/proof.json.
+  try { proof = JSON.parse(fs.readFileSync(path.join(root, ".qahub", "proof.json"), "utf8")); } catch { /* never tried */ }
   const out = [];
   for (const t of tests) {
     if (t.knownBug) continue;
