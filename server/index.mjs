@@ -141,6 +141,15 @@ export const TOOLS = [
     } },
   },
   {
+    name: "qahub_helpers",
+    description: "Before writing ANY helper (a function or value in a non-spec file): the project's helpers — every teammate's — best matches first: name(params) — what it does · its file · which modules' tests use it, and where one is written twice. Import an existing one; never write a second helper that does the same. One a second module needs moves to qahub/shared/ (update its importers in the same push). Without query: the module's own helpers, the ones it uses and the shared ones.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      query: { type: "string", description: "What the helper does, in a few words or its name, e.g. \"refused save message\"" },
+      module: { type: "string", description: "The module you work on" },
+      project: { type: "string", description: "Leave out to use the linked project" },
+    } },
+  },
+  {
     name: "qahub_knowledge",
     description: "What QA Hub knows about this app, kept for the whole team and filed like an index: under each module (its own topic — journey, fields and rules, test data that works, bugs — and its pages' topics), then overall (the code map, \"app\", pages in no module). Read it BEFORE the code: faster, and it saves your usage. Without arguments: the index, with whether each topic is up to date (changed: files the code changed since). module: everything filed under that module, in full — read only the module you work on. topic: one topic in full.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
@@ -398,12 +407,23 @@ export function describeProject(s, module) {
     `Sets (hand-picked, run in this order): ${s.sets?.length ? `\n${s.sets.map((x) => `- ${x.name}${x.description ? ` — ${x.description}` : ""}: ${x.tests.join(", ") || "empty"}`).join("\n")}` : "none"}. Every module and every tag is also a set of its own, automatically.`,
     describeLabels(s),
     `Spec folders: ${s.folders?.join(", ") || "none yet"}. Shared helpers: ${s.helpers?.join(", ") || "none yet"}.`,
+    ...(s.helperIndex ? [describeHelperIndex(s.helperIndex)] : []),
     `Environments: ${s.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}.`,
     describeAccounts(s),
     describeVariables(s),
     `Tests (${s.tests.length}):\n${list.join("\n") || "none yet"}`,
   ].join("\n\n");
 }
+
+/** The helpers catalog, compact: how many, where, and what's written twice — qahub_helpers searches it. */
+export function describeHelperIndex(h) {
+  if (!h.total) return "Helpers: none yet. Before writing one, qahub_helpers; one two modules need goes in qahub/shared/.";
+  return [`Helpers: ${h.total} in ${h.files.length} file${h.files.length === 1 ? "" : "s"} — ${h.files.map((f) => `${f.file} ${f.count}${f.module ? ` (${f.module})` : ""}`).join(", ")}. Before writing a helper, qahub_helpers { query } — import one that exists, never write a second.`,
+    ...(h.duplicates.length ? [`Written twice (import one, drop the other): ${h.duplicates.slice(0, 10).map((d) => `${d.name} (${d.files.join(", ")})`).join("; ")}.`] : [])].join("\n");
+}
+
+/** One helper on one line: name(params) — what it does · file · used by: … (and where it's written twice). */
+export const helperLine = (x) => `${x.name}${x.params === null ? "" : `(${x.params})`} — ${x.description || "no description"} · ${x.file}${x.usedBy.length ? ` · used by: ${x.usedBy.join(", ")}` : " · used by no test yet"}${x.duplicates.length ? ` · ⚠ also in ${x.duplicates.map((d) => (d.name === x.name ? d.file : `${d.file} as ${d.name}`)).join(", ")}` : ""}`;
 
 /** The project's labels (one shared list, like GitHub labels): what each means, so tests are tagged by meaning. */
 export function describeLabels(s) {
@@ -548,7 +568,9 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const place = !where ? "" : `Testing ${where.place ?? "the app"} — code branch ${where.branch ?? "the default"}${where.production ? ` (production: ${where.production})` : ""}.${where.newOnBranch ? `\nNot in production yet:\n${where.newOnBranch}` : ""}${where.note ? `\n${where.note}` : ""}\n\n`;
       // The version of each topic read in full: a save of it carries this, so it never lands over a newer one.
       if (t || m) for (const e of entries) if (e.body !== undefined) readAt.set(`${p}\n${e.topic.toLowerCase()}`, e.updatedAt); // only what was really read
-      const state = (e) => (e.upToDate ? "up to date" : e.changed ? `OUT OF DATE — changed since: ${e.changed.join(", ")}` : `can't tell if current (${e.unknown})`);
+      // "observed: <module>": what QA Hub's explorer saw in the real app (QA Hub 2026-10-21+) — dated per part, no code to compare.
+      const seen = (e) => /^observed: /i.test(e.topic);
+      const state = (e) => (seen(e) ? "OBSERVED in the real app (each part says where, as whom and when) — trust it over the code-made page topics when they differ" : e.upToDate ? "up to date" : e.changed ? `OUT OF DATE — changed since: ${e.changed.join(", ")}` : `can't tell if current (${e.unknown})`);
       const full = (e) => `## ${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
       if (t) return full(entries[0]);
       if (m) {
@@ -558,7 +580,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       }
       if (!entries.length) return `${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn into the module's topic (topic = its name; "page /…" topics are QA Hub's, made from the code — it refuses saves to them) so the next Claude doesn't have to.`;
       const by = new Map(entries.map((e) => [e.topic, e]));
-      const mark = (name) => { const e = by.get(name); return !e ? name : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
+      const mark = (name) => { const e = by.get(name); return !e ? name : seen(e) ? `${name} (observed in the real app${e.summary ? `: ${e.summary.replace(/^what .+? looks like in the real app — /, "")}` : ""})` : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
       const lines = ["The index — read only the module you work on (qahub_knowledge { module }), or one topic (qahub_knowledge { topic }):"];
       const walk = (ns, depth) => { for (const n of ns) { lines.push(`${"  ".repeat(depth)}- ${n.module} (${n.path}): ${n.topics.length ? n.topics.map(mark).join(" · ") : "nothing yet"}`); if (depth < 6) walk(n.modules, depth + 1); } };
       walk(index?.modules ?? [], 0);
@@ -567,7 +589,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const rest = overall.filter((x) => !x.startsWith("page "));
       lines.push(`Overall: ${rest.map((x) => `${x}${by.get(x)?.summary ? ` (${by.get(x).summary})` : ""}${by.get(x)?.changed ? " ⚠ out of date" : ""}`).join(" · ") || "nothing"}`);
       if (pages.length) lines.push(`Pages in no module yet: ${pages.map((x) => x.slice(5)).join(", ")}`);
-      lines.push("A module's topic says its journey, fields and rules, where it shows, test data that works, values refused, bugs; a page's (QA Hub's, made from the code) says what a user sees there and its validation. A module topic out of date: re-read just those files, then save it again — what you saw on a page goes into its module's topic, never a “page /…” one.");
+      lines.push("A module's topic says its journey, fields and rules, where it shows, test data that works, values refused, bugs; “observed: <module>” (QA Hub's explorer) is what each test account really saw there — fields and their limits, columns, what buttons open — trust it over the code when they differ; a page's (QA Hub's, made from the code) says what a user sees there and its validation. A module topic out of date: re-read just those files, then save it again — what you saw on a page goes into its module's topic, never a “page /…” one.");
       return place + lines.join("\n");
     },
 
@@ -624,6 +646,17 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         same.length ? `${same.map((t) => t.ref).join(", ")} already ${same.length === 1 ? "tests" : "test"} this — don't write a second test. Improve ${same.length === 1 ? "it" : "one of them"} if it's missing a check (a test Claude wrote: push its file with the same title; a recorded one: tell the person what to add). QA Hub refuses a duplicate.`
           : "None of these is the same test; if yours checks something they don't, write it.",
       ].join("\n");
+    },
+    async qahub_helpers({ query, module, project } = {}) {
+      await qa.whoami();
+      const p = projectOf(project);
+      const q = String(query ?? "").trim(), m = String(module ?? "").trim();
+      const r = await qa.call("GET", `/api/v1/projects/${p}/helpers?q=${encodeURIComponent(q)}${m ? `&module=${encodeURIComponent(m)}` : ""}`);
+      const reuse = "Import the one that does what you need — never write a second helper that does the same. One a second module needs moves to qahub/shared/ (qahub_pull it first; update its importers in the same push).";
+      if (!r.total) return "No helpers in this project yet — write yours in the module's helpers file; one two modules need goes in qahub/shared/.";
+      if (!r.matched) return `Nothing matched “${q}” — no helper does that yet, so writing one is fine. The closest are:\n${r.closest.map(helperLine).join("\n")}`;
+      if (!r.helpers.length) return `No helpers for ${m} yet, and none shared (${r.total} in the project: qahub_helpers { query } searches them all).`;
+      return [q ? `Helpers for “${q}”, best first (${r.helpers.length} of ${r.total}):` : `${m ? `${m}'s helpers, the ones it uses, and the shared ones` : "Every helper"} (${r.helpers.length} of ${r.total}):`, ...r.helpers.map(helperLine), reuse].join("\n");
     },
     async qahub_pull({ overwrite = [], project } = {}) {
       await qa.whoami();

@@ -38,8 +38,10 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "GET") {
       const q = { topic: "Quotes", body: "## Journey\n- open: /quotes (code)", files: [], sha: null, by: "Ana", updatedAt: "2026-10-17T06:00:00.123Z", upToDate: true, size: 30 };
       const where = u.searchParams.get("where") === "none" ? undefined : { place: "Staging", branch: "staging", production: null, newOnBranch: "2 commits ahead of main · pages changed: /quotes\n- Quote export" };
-      if (u.searchParams.get("module")) return out(200, { entries: [q], where });
-      return out(200, { entries: [{ ...q, body: undefined, summary: "open: /quotes" }], where, index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes"], modules: [] }], overall: [] } });
+      // What QA Hub's explorer saw in the real app: no commit to compare with, dated per part.
+      const o = { topic: "observed: Quotes", body: "OBSERVED in the real app…\n## On Staging as admin — observed 2026-10-21\n### /quotes — Quotes\n- Table columns: Customer | Amount", files: [], sha: null, by: "QA Hub (explored the app as each test account)", updatedAt: "2026-10-21T06:00:00.000Z", unknown: "saved without a commit", size: 90 };
+      if (u.searchParams.get("module")) return out(200, { entries: [q, o], where });
+      return out(200, { entries: [{ ...q, body: undefined, summary: "open: /quotes" }, { ...o, body: undefined, summary: "what Quotes looks like in the real app — observed on Staging as admin" }], where, index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes", "observed: Quotes"], modules: [] }], overall: [] } });
     }
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
     if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"],
@@ -60,6 +62,12 @@ const server = http.createServer((req, res) => {
             delete: { consider: ["confirm → gone from the list"], gate: "checks the deleted item is gone" }, search: { consider: ["a match shows"], gate: "checks that a match shows and that a non-match doesn't" } } });
     if (u.pathname === "/api/v1/projects/freight/plan" && req.method === "POST") { const body = JSON.parse(b); planned.push(body);
       return out(200, { planned: body.tests.map((t, i) => ({ ref: `TEST-0001${i}`, title: t.title, module: t.module, stage: planReview ? "planned" : "approved" })), behaviours: { added: (body.behaviours ?? []).map((x) => x.name), kept: [], dropped: ["Archive a quote"] }, review: planReview }); }
+    if (u.pathname === "/api/v1/projects/freight/helpers") {
+      const refused = { name: "expectRefused", file: "qahub/companies/helpers.ts", line: 6, params: "page: Page, messages: string[]", description: "A refused save: the red box lists exactly these messages.", module: "Companies", shared: false, usedBy: ["Companies", "Orders"], duplicates: [{ name: "expectRefused", file: "qahub/products/helpers.ts" }] };
+      const q = u.searchParams.get("q");
+      if (q === "upload a logo") return out(200, { query: q, matched: false, total: 2, helpers: [], closest: [refused] });
+      return out(200, { query: q, module: u.searchParams.get("module"), matched: true, total: 2, helpers: [refused, { ...refused, name: "RED_LOGO", params: null, description: "A red 1×1 PNG.", usedBy: [], duplicates: [] }] });
+    }
     if (u.pathname === "/api/v1/projects/freight/tests" && req.method === "GET") return out(200, { tests: u.searchParams.get("q") === "saving a quote"
       ? [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", file: "tests/quotes.spec.ts", steps: ["Open Quotes", "Save it"], by: "written by Claude", same: true }] : [] });
     if (u.pathname === "/api/v1/projects/freight/files") return out(200, { files: [
@@ -181,7 +189,7 @@ test("speaks MCP over stdio: initialize, list the tools, call one", async () => 
   assert.equal((await answer(1)).result.serverInfo.name, "qahub");
   ask({ method: "notifications/initialized" });
   ask({ id: 2, method: "tools/list" });
-  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_knowledge", "qahub_code", "qahub_learn", "qahub_wait_review", "qahub_map", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look"]);
+  assert.deepEqual((await answer(2)).result.tools.map((t) => t.name), ["qahub_status", "qahub_project", "qahub_design", "qahub_plan", "qahub_find", "qahub_helpers", "qahub_knowledge", "qahub_code", "qahub_learn", "qahub_wait_review", "qahub_map", "qahub_pull", "qahub_link", "qahub_gaps", "qahub_push", "qahub_run", "qahub_results", "qahub_fixes", "qahub_fix_note", "qahub_look"]);
   ask({ id: 3, method: "tools/call", params: { name: "qahub_status", arguments: {} } });
   assert.match((await answer(3)).result.content[0].text, /Connected to QA Hub/);
   } finally { child.kill(); }
@@ -310,6 +318,21 @@ test("qahub_find: what already tests a behaviour, before writing a second one", 
   assert.match(said, /SAME: TEST-00004 “Save a quote” \(Quotes, written by Claude; tests\/quotes\.spec\.ts\)[\s\S]*Open Quotes → Save it/);
   assert.match(said, /don't write a second test/i);
   assert.match(await t.qahub_find({ about: "exporting invoices" }), /Nothing in QA Hub covers this yet/);
+});
+
+test("qahub_helpers: the project's helpers, best match first — who uses each, where one is written twice — and an honest nothing-matched", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  const said = await t.qahub_helpers({ query: "refused save" });
+  assert.match(said, /^Helpers for “refused save”, best first \(2 of 2\):\nexpectRefused\(page: Page, messages: string\[\]\) — A refused save: the red box lists exactly these messages\. · qahub\/companies\/helpers\.ts · used by: Companies, Orders · ⚠ also in qahub\/products\/helpers\.ts/);
+  assert.match(said, /\nRED_LOGO — A red 1×1 PNG\. · qahub\/companies\/helpers\.ts · used by no test yet\n/, "a value has no (params)");
+  assert.match(said, /never write a second helper[\s\S]*qahub\/shared\//);
+  assert.match(await t.qahub_helpers({ module: "Orders" }), /^Orders's helpers, the ones it uses, and the shared ones/);
+  assert.match(await t.qahub_helpers({ query: "upload a logo" }), /^Nothing matched “upload a logo” — no helper does that yet[\s\S]*The closest are:\nexpectRefused/);
+  const { describeHelperIndex } = await import("../server/index.mjs");
+  assert.match(describeHelperIndex({ total: 3, files: [{ file: "qahub/companies/helpers.ts", count: 2, module: "Companies" }, { file: "qahub/products/helpers.ts", count: 1, module: "Products" }], duplicates: [{ name: "expectRefused", files: ["qahub/companies/helpers.ts", "qahub/products/helpers.ts"] }] }),
+    /^Helpers: 3 in 2 files — qahub\/companies\/helpers\.ts 2 \(Companies\), qahub\/products\/helpers\.ts 1 \(Products\)\. Before writing a helper, qahub_helpers[\s\S]*\nWritten twice \(import one, drop the other\): expectRefused \(qahub\/companies\/helpers\.ts, qahub\/products\/helpers\.ts\)\.$/);
+  assert.doesNotMatch(await t.qahub_project({}), /^Helpers:/m, "an older QA Hub without the catalog: nothing said");
 });
 
 test("qahub_pull: brings the team's latest test files; never overwrites a local file unless asked, and says what's different", async () => {
@@ -719,6 +742,8 @@ test("the checklist has one home: the write-tests skill — the hook hands over 
   assert.ok(CHECKLIST.length > 500 && CHECKLIST.length < 2500, String(CHECKLIST.length));
   assert.ok(skill.includes(CHECKLIST.split("\n").slice(1).join("\n")), "the hook's text is the skill's checklist section");
   assert.equal(skill.split("Tests start signed in").length - 1, 1, "and the rule is written once");
+  assert.match(CHECKLIST, /qahub_helpers before any helper \(import it\)/, "helpers are searched before one is written");
+  assert.match(skill, /`qahub_helpers \{ query \}` before writing ANY helper[^\n]*never write a second[^\n]*`qahub\/shared\/` \(update its importers in the same push\)/);
 });
 
 test("after building: app code changed and nothing pushed — Claude is sent back once to write tests (or say why not)", async () => {
@@ -883,6 +908,9 @@ test("knowledge: the index first, a module in one call, and a save never lands o
   // Where this QA is testing and what that branch has that production doesn't — first, in the index and a module read.
   assert.match(index, /^Testing Staging — code branch staging\.\nNot in production yet:\n2 commits ahead of main · pages changed: \/quotes\n- Quote export/);
   assert.match(await t.qahub_knowledge({ module: "Quotes" }), /^Testing Staging — code branch staging\./);
+  // What the explorer saw in the real app is marked observed — trusted over the code-made page topics.
+  assert.match(index, /Quotes \(module topic: open: \/quotes\) · observed: Quotes \(observed in the real app: observed on Staging as admin\)/);
+  assert.match(await t.qahub_knowledge({ module: "Quotes" }), /## observed: Quotes — by QA Hub \(explored the app as each test account\), 2026-10-21, OBSERVED in the real app \(each part says where, as whom and when\) — trust it over the code-made page topics/);
   await t.qahub_learn({ topic: "Invoices", body: "## Journey\n- open: /invoices (code)", files: [] });
   assert.equal(learned.at(-1).basedOn, "new", "never read: it must not exist yet");
   await t.qahub_knowledge({ module: "Quotes" });
