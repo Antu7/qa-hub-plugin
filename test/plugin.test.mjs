@@ -38,8 +38,9 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/projects") return out(200, { projects: [{ slug: "freight", name: "Freight portal" }] });
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "GET") {
       const q = { topic: "Quotes", body: "## Journey\n- open: /quotes (code)", files: [], sha: null, by: "Ana", updatedAt: "2026-10-17T06:00:00.123Z", upToDate: true, size: 30 };
-      if (u.searchParams.get("module")) return out(200, { entries: [q] });
-      return out(200, { entries: [{ ...q, body: undefined, summary: "open: /quotes" }], index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes"], modules: [] }], overall: [] } });
+      const where = u.searchParams.get("where") === "none" ? undefined : { place: "Staging", branch: "staging", production: null, newOnBranch: "2 commits ahead of main · pages changed: /quotes\n- Quote export" };
+      if (u.searchParams.get("module")) return out(200, { entries: [q], where });
+      return out(200, { entries: [{ ...q, body: undefined, summary: "open: /quotes" }], where, index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes"], modules: [] }], overall: [] } });
     }
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
     if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal",
@@ -872,7 +873,11 @@ test("keep going: Claude goes back to work until the tests it builds are done", 
 test("knowledge: the index first, a module in one call, and a save never lands over a newer version", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
-  assert.match(await t.qahub_knowledge({}), /Quotes \(\/quotes\): Quotes \(module topic: open: \/quotes\)/);
+  const index = await t.qahub_knowledge({});
+  assert.match(index, /Quotes \(\/quotes\): Quotes \(module topic: open: \/quotes\)/);
+  // Where this QA is testing and what that branch has that production doesn't — first, in the index and a module read.
+  assert.match(index, /^Testing Staging — code branch staging\.\nNot in production yet:\n2 commits ahead of main · pages changed: \/quotes\n- Quote export/);
+  assert.match(await t.qahub_knowledge({ module: "Quotes" }), /^Testing Staging — code branch staging\./);
   await t.qahub_learn({ topic: "Invoices", body: "## Journey\n- open: /invoices (code)", files: [] });
   assert.equal(learned.at(-1).basedOn, "new", "never read: it must not exist yet");
   await t.qahub_knowledge({ module: "Quotes" });

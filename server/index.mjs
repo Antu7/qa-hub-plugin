@@ -560,18 +560,20 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.whoami();
       const p = projectOf(project);
       const t = String(topic ?? "").trim(), m = String(module ?? "").trim();
-      const { entries, index } = await qa.call("GET", `/api/v1/projects/${p}/knowledge${t ? `?topic=${encodeURIComponent(t)}` : m ? `?module=${encodeURIComponent(m)}` : ""}`);
+      const { entries, index, where } = await qa.call("GET", `/api/v1/projects/${p}/knowledge${t ? `?topic=${encodeURIComponent(t)}` : m ? `?module=${encodeURIComponent(m)}` : ""}`);
+      // Where this QA is testing and on which branch of the code (QA Hub 2026-10-20+): said first, with what's new there.
+      const place = !where ? "" : `Testing ${where.place ?? "the app"} — code branch ${where.branch ?? "the default"}${where.production ? ` (production: ${where.production})` : ""}.${where.newOnBranch ? `\nNot in production yet:\n${where.newOnBranch}` : ""}${where.note ? `\n${where.note}` : ""}\n\n`;
       // The version of each topic read in full: a save of it carries this, so it never lands over a newer one.
       if (t || m) for (const e of entries) if (e.body !== undefined) readAt.set(`${p}\n${e.topic.toLowerCase()}`, e.updatedAt); // only what was really read
       const state = (e) => (e.upToDate ? "up to date" : e.changed ? `OUT OF DATE — changed since: ${e.changed.join(", ")}` : `can't tell if current (${e.unknown})`);
       const full = (e) => `## ${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
       if (t) return full(entries[0]);
       if (m) {
-        if (!entries.length) return `Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
+        if (!entries.length) return `${place}Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
         const later = entries.filter((e) => e.more);
-        return [...entries.filter((e) => !e.more).map(full), ...(later.length ? [`More filed under ${m}, not shown to keep this short — read one when you need it with qahub_knowledge { topic }: ${later.map((e) => `“${e.topic}”${e.summary ? ` (${e.summary})` : ""}`).join(", ")}`] : [])].join("\n\n");
+        return place + [...entries.filter((e) => !e.more).map(full), ...(later.length ? [`More filed under ${m}, not shown to keep this short — read one when you need it with qahub_knowledge { topic }: ${later.map((e) => `“${e.topic}”${e.summary ? ` (${e.summary})` : ""}`).join(", ")}`] : [])].join("\n\n");
       }
-      if (!entries.length) return "Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (a module's topic = its name; a page's = \"page /address\") so the next Claude doesn't have to.";
+      if (!entries.length) return `${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn (a module's topic = its name; a page's = "page /address") so the next Claude doesn't have to.`;
       const by = new Map(entries.map((e) => [e.topic, e]));
       const mark = (name) => { const e = by.get(name); return !e ? name : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
       const lines = ["The index — read only the module you work on (qahub_knowledge { module }), or one topic (qahub_knowledge { topic }):"];
@@ -583,7 +585,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       lines.push(`Overall: ${rest.map((x) => `${x}${by.get(x)?.summary ? ` (${by.get(x).summary})` : ""}${by.get(x)?.changed ? " ⚠ out of date" : ""}`).join(" · ") || "nothing"}`);
       if (pages.length) lines.push(`Pages in no module yet: ${pages.map((x) => x.slice(5)).join(", ")}`);
       lines.push("A module's topic says its journey, fields and rules, where it shows, test data that works, values refused, bugs; a page's says what a user sees there and its validation. Out of date: re-read just those files, then save the topic again.");
-      return lines.join("\n");
+      return place + lines.join("\n");
     },
 
     async qahub_code({ path, search, under, project } = {}) {
