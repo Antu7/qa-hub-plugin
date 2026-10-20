@@ -1,5 +1,5 @@
 // The plugin against a pretend QA Hub: only a valid key with an active plan gets anything done.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -42,7 +42,7 @@ const server = http.createServer((req, res) => {
       return out(200, { entries: [{ ...q, body: undefined, summary: "open: /quotes" }], where, index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes"], modules: [] }], overall: [] } });
     }
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
-    if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal",
+    if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"],
       environments: [{ name: "Local", url: "http://localhost:3000", kind: "local" }],
       modules: [{ name: "Quotes", path: "/quotes", parent: null, tests: 1 }, { name: "Quote details", path: "/quotes/1", parent: "/quotes", tests: 0 }, { name: "Log in", path: "/login", parent: null, tests: 1 }],
       sets: [{ name: "Release check", description: "Before every release", tests: ["TEST-00004"] }],
@@ -108,6 +108,21 @@ before(async () => {
 after(() => { server.close(); fs.rmSync(app, { recursive: true, force: true }); });
 
 const as = (key) => tools({ QAHUB_KEY: key, QAHUB_SERVER: base }, app, fetch, { pollMs: 10, waitMs: 3_000 });
+
+test("a git checkout of another app isn't linked to a project whose GitHub repos are others — unless the user says so", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-shop-"));
+  const git = (...args) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("remote", "add", "origin", "https://github.com/acme/shop.git");
+  const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base }, dir, fetch, { pollMs: 10, waitMs: 3_000 });
+  await assert.rejects(t.qahub_link({ project: "freight" }), /This folder is acme\/shop on GitHub, but the QA Hub project “freight” is linked to acme\/freight-portal[\s\S]*force: true/);
+  assert.ok(!fs.existsSync(path.join(dir, "qahub.json")), "nothing linked");
+  assert.match(await t.qahub_link({ project: "freight", force: true }), /Linked/);
+  // The project's own repo, however its address is written: linked as before.
+  git("remote", "set-url", "origin", "git@github.com:Acme/Freight-Portal.git");
+  assert.match(await t.qahub_link({ project: "freight" }), /Linked/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 test("the address: https, or plain http only on this computer / local network", () => {
   assert.equal(serverUrl("https://qahub.example.com/x"), "https://qahub.example.com");
@@ -885,13 +900,43 @@ test("the recorder chat saves only proven tests: passed twice with this exact co
   assert.deepEqual(unprovenTests(dir, [t("C")]), [{ title: "C", why: "never tried" }]);
   assert.deepEqual(unprovenTests(dir, [t("B", { knownBug: "the app accepts a bad email" })]), []);
   fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code + "\n// changed");
-  assert.deepEqual(unprovenTests(dir, [t("A")]), [{ title: "A", why: "its code changed since it last passed" }]);
+  assert.deepEqual(unprovenTests(dir, [t("A")]), [{ title: "A", why: "its code, or a helper it imports, changed since it last passed" }]);
   fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code + "\n// changed", "A"), streak: 2 } }));
   assert.deepEqual(unprovenTests(dir, [t("A")]), []);
   // Proof is per test: fixing B leaves A proven (only shared code — imports, setup — un-proves every test).
   fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), (code + "\n// changed").replace('test("B", async () => {});', 'test("B", async () => { await fix(); });'));
   assert.deepEqual(unprovenTests(dir, [t("A")]), [], "A is untouched: still proven");
   assert.deepEqual(unprovenTests(dir, [t("B")]), [{ title: "B", why: "never tried" }]);
+});
+
+// The same fixture and sha are pinned in the connector's test (qahub packages/cli test/try.test.mjs): the two can't drift.
+test("a changed local helper un-proves every test whose spec imports it, however deep", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qh-app-"));
+  const files = {
+    "qahub/m/a.spec.ts": 'import { test } from "@playwright/test";\nimport { save } from "./helpers";\nimport data from "../shared/data.json";\ntest("A", async () => { await save(data); });\ntest("B", async () => {});\n',
+    "qahub/m/helpers.ts": 'import { nav } from "./nav.js";\nexport const save = async () => nav;\n',
+    "qahub/m/nav.ts": "export const nav = 1;\n",
+    "qahub/shared/data.json": '{ "x": 1 }\n',
+    "qahub/m/unused.ts": "export const no = 1;\n",
+  };
+  for (const [f, src] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), src); }
+  fs.mkdirSync(path.join(dir, ".qahub"));
+  // A connector from 0.10.21 writes both: sha (the test's own code, for older plugins) and sha2 (with its helpers).
+  const proof = (entry) => fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/m/a.spec.ts#A": { ...entry, streak: 2 } }));
+  const { proofText } = await import("../server/index.mjs");
+  const { createHash } = await import("node:crypto");
+  const own = createHash("sha1").update(proofText(files["qahub/m/a.spec.ts"], "A")).digest("hex");
+  proof({ sha: own, sha2: "b918a208b4af03fa9203f6375b7619d3a9702580" });
+  const a = [{ file: "qahub/m/a.spec.ts", title: "A" }];
+  assert.deepEqual(unprovenTests(dir, a), []);
+  fs.writeFileSync(path.join(dir, "qahub/m/unused.ts"), "export const no = 2;\n");
+  assert.deepEqual(unprovenTests(dir, a), [], "a file it doesn't import changes nothing");
+  fs.writeFileSync(path.join(dir, "qahub/m/nav.ts"), "export const nav = 2;\n");
+  assert.deepEqual(unprovenTests(dir, a), [{ title: "A", why: "its code, or a helper it imports, changed since it last passed" }]);
+  // An older connector's proof (sha only) is checked as it was made — a plugin updated before the connector never blocks a push.
+  proof({ sha: own });
+  assert.deepEqual(unprovenTests(dir, a), [], "older connector: the test's own code still matches");
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test("a bare 404 or 503 (QA Hub restarting) is tried once more, and said as it is — never 'not found'", async () => {

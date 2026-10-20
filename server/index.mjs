@@ -2,6 +2,7 @@
 // The QA Hub MCP server inside the Claude Code plugin: newline-delimited JSON-RPC (MCP) on stdin/stdout.
 // No dependencies. Every tool checks the API key first (see qahub.mjs) — a revoked key or an ended plan
 // stops it within a minute, whatever the session already had.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -197,7 +198,8 @@ export const TOOLS = [
   {
     name: "qahub_link",
     description: "Link this app's folder to a QA Hub project (writes qahub.json with the project's name in the app's root). Use the project name shown in QA Hub.",
-    inputSchema: { type: "object", properties: { project: { type: "string", description: "The project's short name (slug), e.g. freight-portal" } }, required: ["project"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { project: { type: "string", description: "The project's short name (slug), e.g. freight-portal" },
+      force: { type: "boolean", description: "Link even though this folder's GitHub repo isn't one of the project's — only once the user confirms it's the right project" } }, required: ["project"], additionalProperties: false },
   },
   {
     name: "qahub_gaps",
@@ -673,11 +675,18 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         ...(!added.length && !replaced.length && !differs.length ? ["This folder already has QA Hub's latest."] : []),
       ].join("\n");
     },
-    async qahub_link({ project }) {
+    async qahub_link({ project, force = false }) {
       await qa.whoami();
       const p = projectOf(String(project ?? "").trim().toLowerCase());
       const { projects } = await qa.call("GET", "/api/v1/projects");
       if (!projects.some((x) => x.slug === p)) throw new QaHubError(`No project “${p}” in your company's QA Hub. Projects: ${projects.map((x) => x.slug).join(", ") || "none"}.`);
+      // A checkout of another app linked here would read and teach the wrong project: its GitHub repo must be one of the
+      // project's. Not a git checkout, or a project with no repo linked: nothing to compare.
+      const mine = gitRepos(root);
+      if (mine.length && !force) {
+        const theirs = ((await qa.call("GET", `/api/v1/projects/${p}`)).repos ?? []).map((r) => repoName(typeof r === "string" ? r : r?.repo)).filter(Boolean);
+        if (theirs.length && !theirs.some((r) => mine.includes(r))) throw new QaHubError(`This folder is ${mine.join(", ")} on GitHub, but the QA Hub project “${p}” is linked to ${theirs.join(", ")} — so it's probably not this app's project. Ask the user which project it is; only if they say “${p}” is right, call qahub_link again with force: true.`);
+      }
       fs.writeFileSync(path.join(root, LINK_FILE), JSON.stringify({ project: p }, null, 2) + "\n");
       return `Linked ${root} to the QA Hub project “${p}” (${LINK_FILE} — commit it so teammates share the link; it holds no secret).`;
     },
@@ -830,9 +839,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
 /**
  * What a test's proof covers: its file with every OTHER test cut out — its own code and the file's shared code
  * (imports, beforeEach, helpers at the top), not its neighbours'. Fixing one test no longer un-proves the rest of the
- * file; changing shared code still does. The connector records proof the same way (qahub packages/cli/bin/try.mjs) — keep the two identical.
+ * file; changing shared code still does — and so does a local file it imports (`./helpers`), given its `file` and
+ * `read(path)` (a file's text, or null). The connector records proof the same way (qahub packages/cli/bin/try.mjs) — keep the two identical.
  */
-export function proofText(src, title) {
+export function proofText(src, title, file, read) {
   const s = String(src);
   // Where a test(...) call ends: its brackets matched, text in quotes skipped.
   const endOf = (from) => {
@@ -847,6 +857,29 @@ export function proofText(src, title) {
   const heads = [...s.matchAll(/\btest(?:\.only)?\(\s*(["'`])((?:\\.|(?!\1).)+)\1/g)];
   let out = s;
   for (let i = heads.length - 1; i >= 0; i--) if (heads[i][2] !== title) out = out.slice(0, heads[i].index) + out.slice(endOf(heads[i].index));
+  return read ? out + helpersOf(s, file, read) : out;
+}
+
+/**
+ * The text of the local files a spec imports (./x, ../x — never a package), followed import by import: what a try
+ * runs of them, so only files under qahub/. At most 5 imports deep, 50 files, 1 MB. Kept identical in the connector.
+ */
+function helpersOf(src, file, read) {
+  const seen = new Set([path.posix.normalize(file)]);
+  let out = "";
+  const walk = (from, text, depth) => {
+    for (const m of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(["'])(\.{1,2}\/[^"'\n]*)\1/g)) {
+      const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), m[2]));
+      const hit = [base, ...["ts", "js", "mjs", "cjs", "json"].map((x) => `${base}.${x}`), base.replace(/\.js$/, ".ts"), ...["ts", "js", "mjs"].map((x) => `${base}/index.${x}`)]
+        .find((p) => p.startsWith("qahub/") && /\.(m?[jt]s|cjs|json)$/.test(p) && !p.split("/").some((x) => ["node_modules", ".git", ".results", ".auth"].includes(x)) && read(p) != null);
+      if (!hit || seen.has(hit) || seen.size >= 50 || out.length > 1_000_000) continue;
+      seen.add(hit);
+      const got = String(read(hit));
+      out += `\n// ${hit}\n${got}`;
+      if (depth < 5) walk(hit, got, depth + 1);
+    }
+  };
+  walk(file, src, 1);
   return out;
 }
 
@@ -868,8 +901,22 @@ function notProven(root, proof, t) {
   let content = null;
   try { content = fs.readFileSync(path.join(root, t.file), "utf8"); } catch { /* not on disk */ }
   const p = proof[`${t.file}#${t.title}`];
-  const sha = content === null ? null : createHash("sha1").update(proofText(content, t.title)).digest("hex");
-  return !p ? "never tried" : p.sha !== sha ? "its code changed since it last passed" : p.streak < 2 ? (p.streak === 1 ? "passed once, not twice" : "its last try failed") : null;
+  const read = (p) => { try { return fs.readFileSync(path.join(root, p), "utf8"); } catch { return null; } };
+  const sha1 = (x) => createHash("sha1").update(x).digest("hex");
+  // A connector from 0.10.21 also proves the helpers a test imports (sha2) — checked when there; an older one's proof (sha
+  // only) is checked the way it was made, so a plugin and connector updated at different times never block a push.
+  const same = !p || content === null ? false : p.sha2 !== undefined ? p.sha2 === sha1(proofText(content, t.title, t.file, read)) : p.sha === sha1(proofText(content, t.title));
+  return !p ? "never tried" : !same ? "its code, or a helper it imports, changed since it last passed" : p.streak < 2 ? (p.streak === 1 ? "passed once, not twice" : "its last try failed") : null;
+}
+
+/** A repo's address (https://github.com/o/n.git, git@github.com:o/n, ssh://…) or "o/n" as "o/n", lower-case; a folder on disk: null. */
+const repoName = (url) => { const u = String(url ?? "").trim(); return /^(file:|[/.~\\])/.test(u) ? null : /([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(u)?.slice(1).join("/").toLowerCase() ?? null; };
+/** The repos this folder's git checkout points at (its remotes), as "owner/name"; none when it isn't a checkout. */
+function gitRepos(root) {
+  try {
+    const out = execFileSync("git", ["-C", root, "config", "--local", "--get-regexp", "^remote\\..*\\.url$"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+    return [...new Set(out.split("\n").map((l) => repoName(l.split(/\s+/)[1])).filter(Boolean))];
+  } catch { return []; } // not a checkout, no remotes, no git
 }
 
 /**
