@@ -209,6 +209,8 @@ test("the Playwright checklist is handed over once per session, only for test fi
   const first = checklistFor({ cwd: app, tool_input: { file_path: "tests/quotes.spec.ts" } }, seen);
   assert.equal(first.hookSpecificOutput.hookEventName, "PostToolUse");
   assert.match(first.hookSpecificOutput.additionalContext, /never first\(\)\/nth\(\)/);
+  // Sign-in / sign-out tests: the account's password handed at run time (qahub.account), a session of their own — never typed, never a sign-out elsewhere.
+  assert.match(first.hookSpecificOutput.additionalContext, /never sign out\. Sign-in\/out tests: `qahub\.account\("<name>"\)`[^\n]*starts signed out, alone/);
   assert.ok(first.hookSpecificOutput.additionalContext.length < 2500);
   assert.equal(checklistFor({ cwd: app, tool_input: { file_path: "tests/other.spec.ts" } }, seen), null); // once
   fs.rmSync(seen);
@@ -236,6 +238,11 @@ test("qahub_run runs on the person's computer, waits, and says what failed, wher
   // Not waiting: it says the number to ask about.
   assert.match(await t.qahub_run({ tag: "smoke", wait: false, show: true }), /Run #8 started/);
   assert.deepEqual(started.at(-1), { tag: "smoke", headless: false });
+  // Production: only sent when asked for in so many words (QA Hub refuses tests not tagged read-only there otherwise).
+  await t.qahub_run({ tag: "smoke", wait: false, environment: "Production", allowProduction: true });
+  assert.deepEqual(started.at(-1), { allowProduction: true, tag: "smoke", environment: "Production", headless: true });
+  await t.qahub_run({ tag: "smoke", wait: false, allowProduction: "yes" });
+  assert.equal(started.at(-1).allowProduction, undefined, "only a real true counts");
   await t.qahub_run({ tag: "smoke", wait: false, parallel: 8 });
   assert.deepEqual(started.at(-1), { tag: "smoke", headless: true, parallel: 8 }, "how many at once goes along");
   await assert.rejects(t.qahub_run({ tag: "smoke", module: "Quotes" }), /one of/);
