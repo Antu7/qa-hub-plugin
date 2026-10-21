@@ -51,7 +51,8 @@ const server = http.createServer((req, res) => {
       sets: [{ name: "Release check", description: "Before every release", tests: ["TEST-00004"] }],
       tags: ["smoke"], folders: ["tests/quotes"], helpers: ["tests/helpers/nav.ts"],
       tests: [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", tags: ["smoke"], file: "tests/quotes.spec.ts", description: "A rep saves a quote.", steps: ["Open Quotes", "Save it"], by: "written by Claude" },
-        { ref: "TEST-00002", title: "Sign in", module: "Log in", tags: [], file: "tests/login.spec.ts", steps: ["Sign in"], by: "recorded by Maya", needs: ["TEST-00004"] }] });
+        { ref: "TEST-00002", title: "Sign in", module: "Log in", tags: [], file: "tests/login.spec.ts", steps: ["Sign in"], by: "recorded by Maya", needs: ["TEST-00004"] },
+        { ref: "TEST-00012", title: "Save a quote with a coupon", module: "Quotes", tags: [], file: "tests/coupons.spec.ts", steps: ["Open Quotes"], by: "written by Claude (Ana)", waitingFor: "feature-x" }] });
     if (u.pathname === "/api/v1/projects/freight/design") return out(200, u.searchParams.get("module") === "Wishlist"
       ? { project: "freight", module: { name: "Wishlist", path: "/wishlist" }, designed: false, behaviours: [], note: "Wishlist isn't designed yet — propose its behaviours (what a user can do there) with qahub_plan, then plan their test cases.",
           guide: { create: { consider: ["the happy path → reopen → every value is shown"], gate: "reads a typed value back after reloading or reopening the record" } } }
@@ -70,7 +71,8 @@ const server = http.createServer((req, res) => {
       return out(200, { query: q, module: u.searchParams.get("module"), matched: true, total: 2, helpers: [refused, { ...refused, name: "RED_LOGO", params: null, description: "A red 1×1 PNG.", usedBy: [], duplicates: [] }] });
     }
     if (u.pathname === "/api/v1/projects/freight/tests" && req.method === "GET") return out(200, { tests: u.searchParams.get("q") === "saving a quote"
-      ? [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", file: "tests/quotes.spec.ts", steps: ["Open Quotes", "Save it"], by: "written by Claude", same: true }] : [] });
+      ? [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", file: "tests/quotes.spec.ts", steps: ["Open Quotes", "Save it"], by: "written by Claude", same: true },
+        { ref: "TEST-00012", title: "Save a quote with a coupon", module: "Quotes", file: "tests/coupons.spec.ts", steps: ["Open Quotes"], by: "written by Claude (Ana)", same: false, waitingFor: "feature-x" }] : [] });
     if (u.pathname === "/api/v1/projects/freight/files" && pulls.push(u.searchParams.get("branch"))) return out(200, { files: [
       { path: "tests/quotes.spec.ts", sha: "x", content: "import { test } from '@playwright/test';\ntest('Save a quote', async () => {});\ntest('Print a quote', async () => {});\n" },
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
@@ -397,6 +399,9 @@ test("qahub_find: what already tests a behaviour, before writing a second one", 
   const said = await t.qahub_find({ about: "saving a quote" });
   assert.match(said, /SAME: TEST-00004 “Save a quote” \(Quotes, written by Claude; tests\/quotes\.spec\.ts\)[\s\S]*Open Quotes → Save it/);
   assert.match(said, /don't write a second test/i);
+  // A test waiting for its feature: QAs can't see it yet, so Claude is told.
+  assert.match(said, /related: TEST-00012 “Save a quote with a coupon” \(Quotes, written by Claude \(Ana\); tests\/coupons\.spec\.ts; waiting for feature-x — no place runs it yet, QAs don't see it\)/);
+  assert.match(await t.qahub_project({}), /TEST-00012 “Save a quote with a coupon” \(tests\/coupons\.spec\.ts\) — written by Claude \(Ana\) — waiting for feature-x: no place runs it yet, QAs don't see it/);
   assert.match(await t.qahub_find({ about: "exporting invoices" }), /Nothing in QA Hub covers this yet/);
 });
 

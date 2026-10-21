@@ -387,7 +387,7 @@ export function describeProject(s, module) {
     list.push(`${mod}:`);
     for (const t of ts) {
       if (shown++ >= MAX) break;
-      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.runAs ? ` — as ${t.runAs}` : ""}${t.signsInAs?.length ? ` (switches to ${t.signsInAs.join(", ")})` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}`);
+      list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.runAs ? ` — as ${t.runAs}` : ""}${t.signsInAs?.length ? ` (switches to ${t.signsInAs.join(", ")})` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}${t.waitingFor ? ` — waiting for ${t.waitingFor}: no place runs it yet, QAs don't see it` : ""}`);
       if (!want) continue; // steps and data: one module at a time
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
       // Its test data (QAHUB_DATA) as QA Hub holds it: a person may have changed a value, or made it vary each run.
@@ -526,7 +526,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           : `Your computer isn't connected, so tests can't run yet: in QA Hub open Computers and run the connect command it shows (in a terminal on the computer where the app runs).`,
         `Projects: ${projects.map((p) => `${p.slug} (${p.name})`).join(", ") || "none yet — create one in QA Hub"}.`,
         linked ? `This folder is linked to: ${linked}.` : "This folder isn't linked to a project yet (qahub_link).",
-        ...(summary ? [`Environments: ${summary.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}. Tests in QA Hub: ${summary.tests.length}.`] : []),
+        ...(summary ? [`Environments: ${summary.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}. Tests in QA Hub: ${summary.tests.filter((t) => !t.waitingFor).length}.`] : []),
       ].join("\n");
     },
     async qahub_project({ project, module } = {}) {
@@ -640,7 +640,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (!q) throw new QaHubError("Say what behaviour to look for, e.g. about: \"save a quote\"");
       const { tests: found } = await qa.call("GET", `/api/v1/projects/${p}/tests?q=${encodeURIComponent(q)}${module ? `&module=${encodeURIComponent(module)}` : ""}`);
       if (!found.length) return `Nothing in QA Hub covers this yet (“${q}”) — a new test is welcome.`;
-      const line = (t) => `${t.same ? "SAME: " : "related: "}${t.ref} “${t.title}” (${t.module}, ${t.by}; ${t.file})${t.description ? ` — ${t.description}` : ""}\n    ${t.steps.slice(0, 12).join(" → ") || "no steps"}`;
+      const line = (t) => `${t.same ? "SAME: " : "related: "}${t.ref} “${t.title}” (${t.module}, ${t.by}; ${t.file}${t.waitingFor ? `; waiting for ${t.waitingFor} — no place runs it yet, QAs don't see it` : ""})${t.description ? ` — ${t.description}` : ""}\n    ${t.steps.slice(0, 12).join(" → ") || "no steps"}`;
       const same = found.filter((t) => t.same);
       return [
         ...found.map(line),
