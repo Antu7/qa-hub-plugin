@@ -43,6 +43,15 @@ The person may only say "automate this", "test the training page" or "I want neg
 10. **Tell the user** in two lines: what is now proven (behaviours), what's still untested, the run result and its link.
 11. **Suggest what's next — unasked.** From the untested and weak behaviours (`qahub_gaps`), recommend the 2–3 tests worth most, each with one plain reason — money, deleting data and who-may-do-what first ("Delete a course: nothing proves a deleted course is really gone"). Also suggest kinds they haven't asked for when the feature calls for them (a form with no negative tests, an approval with no permission test). Offer to do them; don't start without a yes.
 
+## On a feature branch
+
+When the folder is a git checkout on a feature branch (the hook names it), the push is the feature's one hand-off. Do this once the feature works:
+1. **Write the tests for the new feature** (steps 3-6 above).
+2. **Update the affected tests**: `qahub_find` for each page, flow and changed file the feature touches; where a test no longer matches the new behaviour, `qahub_pull` it and change it in place, keeping their titles (a new title is a new test). Remove a test only when the feature removes what it covers.
+3. **Prove all of them twice locally** (`try_tests`, `repeat: 2`) — the new and the updated.
+4. **`qahub_learn`** what you learned about the changed parts of the app, so the next Claude doesn't read it again.
+5. **One `qahub_push`** with everything. QA Hub keeps it waiting until the feature reaches each place (staging, production…): each place switches to these tests only when its own run shows the feature has arrived. The reply says what is waiting; don't push again to "check".
+
 ## The test standard — what a client (technical or not) expects to see
 
 Shallow tests are the failure here: a create test that fills only the required fields and checks two of them, then deletes, proves almost nothing. Before you plan, write two lists for each form or record (from `qahub_knowledge`, `qahub_code`, `qahub_look`):

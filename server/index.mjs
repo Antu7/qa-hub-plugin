@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { client, isMain, QaHubError, VERSION } from "./qahub.mjs";
+import { client, gitBranch, isMain, QaHubError, VERSION } from "./qahub.mjs";
 
 const LINK_FILE = "qahub.json"; // in the app's repository: { "project": "<slug>" }
 const MAX_FILE = 512 * 1024;
@@ -628,7 +628,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const p = projectOf(project);
       // basedOn: the version this session read ("new" if it never read it — then it must not exist yet). Recorded on
       // reads only, so after any save — another helper's, or this one's — the topic is read again before the next save.
-      await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, body, files: files ?? [], ...(sha ? { sha } : {}), basedOn: readAt.get(`${p}\n${String(topic).toLowerCase()}`) ?? "new" });
+      const branch = gitBranch(root); // a feature branch's knowledge waits for the feature, like its tests
+      await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, body, files: files ?? [], ...(sha ? { sha } : {}), ...(branch ? { branch } : {}), basedOn: readAt.get(`${p}\n${String(topic).toLowerCase()}`) ?? "new" });
       return `Saved “${topic}” — every teammate's Claude reads it now instead of the code.`;
     },
 
@@ -834,9 +835,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           delete t.knownBug;
         }
       }
+      const branch = gitBranch(root); // on a feature branch QA Hub keeps this push waiting until the feature reaches each place
       // Each file's base: QA Hub's sha of the copy the edit here started from — a shared helper a teammate changed since is refused.
       const base = bases(root);
-      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}) };
+      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}), ...(branch ? { branch } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
@@ -848,8 +850,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       bases(root, Object.fromEntries(body.files.map((x) => [x.path, sha256(x.base64 !== undefined ? Buffer.from(x.base64, "base64") : x.content)]))); // QA Hub has these now
       const credited = Array.isArray(res?.credited) ? refs.filter((r) => res.credited.includes(r.ref)) : [];
       const toRun = refs.filter((r) => !credited.includes(r));
+      const w = res?.waiting;
       return [
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
+        ...(w ? [`Waiting for ${w.branch ?? branch}: ${w.newTests ?? 0} new tests, ${w.updated ?? 0} updated — QA Hub switches each place to them when that place's run shows the feature has arrived.${w.note ? ` ${w.note}` : ""}`] : []),
         ...(res?.variables?.created?.length ? [`Variables created: ${res.variables.created.join(", ")} — each run now draws new values for the data linked to them.`] : []),
         ...(res?.variables?.alreadyThere?.length ? [`Already in QA Hub (kept as the person set them): ${res.variables.alreadyThere.join(", ")}.`] : []),
         ...(res?.modules?.added?.length ? [`Modules added: ${res.modules.added.map((m) => `${m.name} (${m.path})`).join(", ")}.`] : []),

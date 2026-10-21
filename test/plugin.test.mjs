@@ -8,6 +8,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
+import { gitBranch } from "../server/qahub.mjs";
 import { appRoot, describeProject, describeRun, pathProblem, readAppFile, tools, unprovenTests } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -98,7 +99,8 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/projects/freight/runs/latest") return out(200, latest);
     if (u.pathname === "/api/v1/projects/freight/gaps") return out(200, { behaviours: { untested: [{ module: "Quotes", name: "Delete a quote", kind: "delete", priority: "high" }], failing: [], weak: [{ module: "Quotes", name: "Search quotes", kind: "search", priority: "low", tests: ["TEST-00007"] }], notDesigned: ["Wishlist"] }, untested: [{ module: "Quotes", path: "/quotes" }] });
     if (u.pathname === "/api/v1/projects/freight/tests" && req.method === "POST") { pushed.push(JSON.parse(b)); return out(200, { files: 1, tests: 1, refs: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", module: "Quotes" }], modules: { added: [], named: [] }, inbox: [],
-      ...(JSON.parse(b).proven?.includes("tests/quotes.spec.ts#Save a quote") ? { credited: ["TEST-00004"] } : {}) }); }
+      ...(JSON.parse(b).proven?.includes("tests/quotes.spec.ts#Save a quote") ? { credited: ["TEST-00004"] } : {}),
+      ...(JSON.parse(b).branch ? { waiting: { branch: JSON.parse(b).branch, newTests: 2, updated: 1, removed: 0, ...(JSON.parse(b).branch === "feature-note" ? { note: "Your own words." } : {}) } } : {}) }); }
     return out(404, { error: { code: "not_found", message: "Project not found" } });
   });
 });
@@ -130,6 +132,50 @@ test("a git checkout of another app isn't linked to a project whose GitHub repos
   git("remote", "set-url", "origin", "git@github.com:Acme/Freight-Portal.git");
   assert.match(await t.qahub_link({ project: "freight" }), /Linked/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// A real checkout on `branch` with one commit and a linked app folder.
+const checkout = (branch) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-branch-"));
+  const git = (...args) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.test", ...args], { stdio: "ignore" });
+  git("init", "-q", "-b", branch);
+  fs.mkdirSync(path.join(dir, "tests"));
+  fs.writeFileSync(path.join(dir, "tests/quotes.spec.ts"), "import { test } from '@playwright/test';\n");
+  fs.writeFileSync(path.join(dir, "qahub.json"), JSON.stringify({ project: "freight" }));
+  git("add", "."); git("commit", "-q", "-m", "first");
+  return { dir, git };
+};
+
+test("push sends the checkout's branch, says it is waiting, and qahub_learn sends the branch too", async () => {
+  const { dir } = checkout("feature-x");
+  try {
+    const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base }, dir, fetch, { pollMs: 10, waitMs: 3_000 });
+    assert.equal(gitBranch(dir), "feature-x");
+    const sent = await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
+    assert.equal(pushed.at(-1).branch, "feature-x");
+    assert.match(sent, /Waiting for feature-x: 2 new tests, 1 updated — QA Hub switches each place to them when that place's run shows the feature has arrived\./);
+    await t.qahub_learn({ topic: "Quotes", body: "x", files: [] });
+    assert.equal(learned.at(-1).branch, "feature-x");
+    // The server's own note, when it sends one, is told too.
+    execFileSync("git", ["-C", dir, "checkout", "-q", "-b", "feature-note"]);
+    assert.match(await t.qahub_push({ files: ["tests/quotes.spec.ts"] }), /Waiting for feature-note[\s\S]*Your own words\./);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  // Not a checkout (the test app's folder has an empty .git): no branch sent, nothing waiting.
+  const sent = await as("qh_good").qahub_push({ project: "freight", files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
+  assert.ok(!("branch" in pushed.at(-1)));
+  assert.doesNotMatch(sent, /Waiting for/);
+});
+
+test("no branch from ~/qa_hub, a detached HEAD or a non-git folder", () => {
+  const { dir, git } = checkout("feature-x");
+  try {
+    assert.equal(gitBranch(path.join(os.homedir(), "qa_hub", "freight")), null);
+    assert.equal(gitBranch(path.join(os.homedir(), "qa_hub")), null);
+    assert.equal(gitBranch(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-nogit-"))), null);
+    assert.equal(gitBranch(path.join(dir, "does-not-exist")), null);
+    git("checkout", "-q", "--detach");
+    assert.equal(gitBranch(dir), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the address: https, or plain http only on this computer / local network", () => {
@@ -767,6 +813,27 @@ test("after building: app code changed and nothing pushed — Claude is sent bac
   assert.equal(buildCheck({ ...input, stop_hook_active: true }, edit("src/a.ts"), fresh()), null, "never loops");
   const other = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-unlinked-"));
   assert.equal(buildCheck({ ...input, cwd: other }, line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(other, "src/a.ts") } }] } }), fresh()), null, "only in a folder linked to QA Hub");
+});
+
+test("build-check on a feature branch asks for new tests, the affected tests' updates, knowledge and one push — and says nothing of a branch elsewhere", async () => {
+  const { buildCheck } = await import("../hooks/build-check.mjs");
+  const { dir } = checkout("feature-x");
+  const edit = (root) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(root, "src/a.ts") } }] } });
+  const fresh = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-seen-")), "s");
+  try {
+    const out = buildCheck({ cwd: dir }, edit(dir), fresh());
+    assert.equal(out.decision, "block");
+    for (const re of [/feature-x/, /qahub_find/, /affected/, /keeping? (their|its) titles/, /twice/, /qahub_learn/, /one qahub_push/, /one line/]) assert.match(out.reason, re);
+    assert.equal(buildCheck({ cwd: dir }, edit(dir), (() => { const s = fresh(); fs.writeFileSync(s, ""); return s; })()), null, "still once per session");
+    assert.equal(buildCheck({ cwd: dir, stop_hook_active: true }, edit(dir), fresh()), null, "still never loops");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assert.doesNotMatch(buildCheck({ cwd: app }, edit(app), fresh()).reason, /branch|affected|qahub_learn/, "no branch, no branch part");
+});
+
+test("the write-tests skill has an 'On a feature branch' section", () => {
+  const skill = fs.readFileSync(path.join(HERE, "../skills/write-tests/SKILL.md"), "utf8");
+  const sec = skill.split("## On a feature branch")[1]?.split("\n## ")[0] ?? "";
+  for (const re of [/qahub_find/, /affected/, /keeping? (their|its) titles/, /twice/, /qahub_learn/, /one `qahub_push`/, /waiting until the feature reaches/]) assert.match(sec, re);
 });
 
 test("you changed what a test uses (plan auto-heal Phase 1): an edit that removes words tests still look for says which lines, and Claude can't finish while they still do", async () => {

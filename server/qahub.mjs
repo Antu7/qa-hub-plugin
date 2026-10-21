@@ -2,10 +2,13 @@
 // The key only ever travels in the Authorization header, only to the configured QA Hub, never through
 // a redirect, and never over plain http except to this computer or the local network.
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.44";
+export const VERSION = "0.7.45";
 /** Where QA Hub lives unless the plugin settings name another address. One place, used by the server and the hooks. */
 export const DEFAULT_SERVER = "https://app.qahub.dev";
 
@@ -128,4 +131,17 @@ export async function publishedVersion() {
 export function updateNote(latest, current = VERSION) {
   if (!newer(latest, current)) return "";
   return ` A newer QA Hub plugin is out (${current} → ${latest}). Tell the user once, before other work: in a terminal run \`claude plugin marketplace update qahub\` and then \`claude plugin update qahub@qahub\` (the first only refreshes the list; the second installs it), then restart Claude Code. To never do this by hand again: /plugin → Marketplaces → qahub → Enable auto-update.`;
+}
+
+/**
+ * The git branch this checkout is on, or null: a detached HEAD, a folder that isn't a checkout, no git, and anything
+ * under ~/qa_hub (QA Hub's own copy of the tests, never the developer's feature branch).
+ */
+export function gitBranch(cwd) {
+  const rel = path.relative(path.join(os.homedir(), "qa_hub"), path.resolve(cwd));
+  if (!rel.startsWith("..") && !path.isAbsolute(rel)) return null;
+  try {
+    const b = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 }).trim();
+    return b && b !== "HEAD" ? b : null;
+  } catch { return null; }
 }
