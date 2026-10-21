@@ -42,6 +42,6 @@ export function buildCheck(input, transcript, seen) {
   try { fs.writeFileSync(seen, "", { flag: "wx" }); } catch { return null; } // already asked this session
   const list = files.slice(0, 6).join(", ") + (files.length > 6 ? `, and ${files.length - 6} more` : "");
   const branch = gitBranch(root);
-  const onBranch = branch ? ` You are on branch ${branch}: also run qahub_find for the tests this change affects and update the affected tests in place, keeping their titles; prove every new and updated test twice locally; qahub_learn what you learned; then send one qahub_push — QA Hub keeps it waiting until the feature reaches each place.` : "";
+  const onBranch = branch ? ` You are on branch ${branch}: also run qahub_find for the tests this change affects and update the affected tests in place, keeping their titles; prove every new and updated test twice locally; qahub_learn what you learned; then send one qahub_push${/^(main|master)$/.test(branch) ? "" : " — QA Hub keeps it waiting until the feature reaches each place"}.` : ""; // main/master: usually what places run, so live
   return { decision: "block", reason: `You changed the app (${list}) and no tests went to QA Hub. If a user can see this change, write tests for it now with the qahub:write-tests skill — look, plan, push, run.${onBranch} If they can't (a refactor, config, styling only), say so in one line and stop.` };
 }

@@ -857,11 +857,20 @@ test("build-check on a feature branch asks for new tests, the affected tests' up
   try {
     const out = buildCheck({ cwd: dir }, edit(dir), fresh());
     assert.equal(out.decision, "block");
-    for (const re of [/feature-x/, /qahub_find/, /affected/, /keeping? (their|its) titles/, /twice/, /qahub_learn/, /one qahub_push/, /one line/]) assert.match(out.reason, re);
+    for (const re of [/feature-x/, /qahub_find/, /affected/, /keeping? (their|its) titles/, /twice/, /qahub_learn/, /one qahub_push/, /one line/, /QA Hub keeps it waiting/]) assert.match(out.reason, re);
     assert.equal(buildCheck({ cwd: dir }, edit(dir), (() => { const s = fresh(); fs.writeFileSync(s, ""); return s; })()), null, "still once per session");
     assert.equal(buildCheck({ cwd: dir, stop_hook_active: true }, edit(dir), fresh()), null, "still never loops");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   assert.doesNotMatch(buildCheck({ cwd: app }, edit(app), fresh()).reason, /branch|affected|qahub_learn/, "no branch, no branch part");
+  // main or master is what places usually run: its push goes live, so nothing is said about waiting.
+  for (const b of ["main", "master"]) {
+    const { dir: d } = checkout(b);
+    try {
+      const out = buildCheck({ cwd: d }, edit(d), fresh());
+      assert.match(out.reason, /one qahub_push/);
+      assert.doesNotMatch(out.reason, /waiting/, b);
+    } finally { fs.rmSync(d, { recursive: true, force: true }); }
+  }
 });
 
 test("the write-tests skill has an 'On a feature branch' section", () => {
