@@ -19,6 +19,7 @@ const started = [];
 let polls = 0, blips = 0;
 const notes = [];
 const learned = [];
+const pulls = []; // each qahub_pull's query: ?branch= on a feature branch
 let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } };
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
   failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time",
@@ -70,7 +71,7 @@ const server = http.createServer((req, res) => {
     }
     if (u.pathname === "/api/v1/projects/freight/tests" && req.method === "GET") return out(200, { tests: u.searchParams.get("q") === "saving a quote"
       ? [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", file: "tests/quotes.spec.ts", steps: ["Open Quotes", "Save it"], by: "written by Claude", same: true }] : [] });
-    if (u.pathname === "/api/v1/projects/freight/files") return out(200, { files: [
+    if (u.pathname === "/api/v1/projects/freight/files" && pulls.push(u.searchParams.get("branch"))) return out(200, { files: [
       { path: "tests/quotes.spec.ts", sha: "x", content: "import { test } from '@playwright/test';\ntest('Save a quote', async () => {});\ntest('Print a quote', async () => {});\n" },
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
       { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
@@ -99,7 +100,7 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/projects/freight/gaps") return out(200, { behaviours: { untested: [{ module: "Quotes", name: "Delete a quote", kind: "delete", priority: "high" }], failing: [], weak: [{ module: "Quotes", name: "Search quotes", kind: "search", priority: "low", tests: ["TEST-00007"] }], notDesigned: ["Wishlist"] }, untested: [{ module: "Quotes", path: "/quotes" }] });
     if (u.pathname === "/api/v1/projects/freight/tests" && req.method === "POST") { pushed.push(JSON.parse(b)); return out(200, { files: 1, tests: 1, refs: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", module: "Quotes" }], modules: { added: [], named: [] }, inbox: [],
       ...(JSON.parse(b).proven?.includes("tests/quotes.spec.ts#Save a quote") ? { credited: ["TEST-00004"] } : {}),
-      ...(JSON.parse(b).branch ? { waiting: { branch: JSON.parse(b).branch, newTests: 2, updated: 1, removed: 0, ...(JSON.parse(b).branch === "feature-note" ? { note: "Your own words." } : {}) } } : {}) }); }
+      ...(JSON.parse(b).branch ? { waiting: { branch: JSON.parse(b).branch, newTests: ["TEST-00010", "TEST-00011"], updated: ["TEST-00004"], removed: [], ...(JSON.parse(b).branch === "feature-note" ? { note: "Your own words." } : {}) } } : {}) }); }
     return out(404, { error: { code: "not_found", message: "Project not found" } });
   });
 });
@@ -153,6 +154,11 @@ test("push sends the checkout's branch, says it is waiting, and qahub_learn send
     const sent = await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
     assert.equal(pushed.at(-1).branch, "feature-x");
     assert.match(sent, /Waiting for feature-x: 2 new tests, 1 updated — QA Hub switches each place to them when that place's run shows the feature has arrived\./);
+    // No place runs them yet: Claude isn't told to run them (they'd run the live versions, or not at all).
+    assert.doesNotMatch(sent, /qahub_run|Run (them|the rest) now/);
+    // A pull from the branch gets the branch's own versions: its next edit starts from what its push is checked against.
+    await t.qahub_pull({});
+    assert.equal(pulls.at(-1), "feature-x");
     await t.qahub_learn({ topic: "Quotes", body: "x", files: [] });
     assert.equal(learned.at(-1).branch, "feature-x");
     // The server's own note, when it sends one, is told too.
@@ -163,6 +169,9 @@ test("push sends the checkout's branch, says it is waiting, and qahub_learn send
   const sent = await as("qh_good").qahub_push({ project: "freight", files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
   assert.ok(!("branch" in pushed.at(-1)));
   assert.doesNotMatch(sent, /Waiting for/);
+  assert.match(sent, /Run them now, twice/);
+  await as("qh_good").qahub_pull({ project: "freight" });
+  assert.equal(pulls.at(-1), null);
 });
 
 test("no branch from ~/qa_hub, a detached HEAD or a non-git folder", () => {

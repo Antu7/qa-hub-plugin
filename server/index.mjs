@@ -662,7 +662,9 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     async qahub_pull({ overwrite = [], project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
-      const { files } = await qa.call("GET", `/api/v1/projects/${p}/files?content=1`, undefined, { timeout: SLOW });
+      // From a feature branch: that branch's own versions, as its push is checked against them (base for the rest).
+      const branch = gitBranch(root);
+      const { files } = await qa.call("GET", `/api/v1/projects/${p}/files?content=1${branch ? `&branch=${encodeURIComponent(branch)}` : ""}`, undefined, { timeout: SLOW });
       const realRoot = fs.realpathSync(root);
       const titles = (src) => [...String(src).matchAll(/\btest(?:\.(?:only|skip|fixme))?\(\s*(["'`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2]);
       const eol = (x) => x.replace(/\r\n/g, "\n"); // a Windows checkout's line endings aren't a difference
@@ -851,16 +853,18 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const credited = Array.isArray(res?.credited) ? refs.filter((r) => res.credited.includes(r.ref)) : [];
       const toRun = refs.filter((r) => !credited.includes(r));
       const w = res?.waiting;
+      const count = (x) => (Array.isArray(x) ? x.length : x ?? 0); // QA Hub sends the refs
       return [
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
-        ...(w ? [`Waiting for ${w.branch ?? branch}: ${w.newTests ?? 0} new tests, ${w.updated ?? 0} updated — QA Hub switches each place to them when that place's run shows the feature has arrived.${w.note ? ` ${w.note}` : ""}`] : []),
+        ...(w ? [`Waiting for ${w.branch ?? branch}: ${count(w.newTests)} new tests, ${count(w.updated)} updated — QA Hub switches each place to them when that place's run shows the feature has arrived.${w.note ? ` ${w.note}` : ""}`] : []),
         ...(res?.variables?.created?.length ? [`Variables created: ${res.variables.created.join(", ")} — each run now draws new values for the data linked to them.`] : []),
         ...(res?.variables?.alreadyThere?.length ? [`Already in QA Hub (kept as the person set them): ${res.variables.alreadyThere.join(", ")}.`] : []),
         ...(res?.modules?.added?.length ? [`Modules added: ${res.modules.added.map((m) => `${m.name} (${m.path})`).join(", ")}.`] : []),
         ...(res?.modules?.named ?? []).map((m) => `QA Hub calls ${m.path} “${m.qahub}” (you said “${m.yours}”) — use “${m.qahub}” from now on.`),
         ...(refs.length ? [`Tests: ${refs.map((r) => `${r.ref} “${r.title}”${r.module ? ` in ${r.module}` : ""}`).join(", ")}.`] : []),
         ...(credited.length ? [`Proven on this computer — passed twice with this exact code — so QA Hub counts ${credited.length === 1 ? "it" : "them"} as verified, no QA Hub run needed: ${credited.map((r) => r.ref).join(", ")}.`] : []),
-        ...(toRun.length ? [`Run ${credited.length ? "the rest" : "them"} now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(toRun.map((r) => r.ref))}, repeat: 2 }`] : []),
+        // Waiting: no place runs them yet (a run would try the live versions, or skip them) — proven here is what counts.
+        ...(toRun.length && !w ? [`Run ${credited.length ? "the rest" : "them"} now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(toRun.map((r) => r.ref))}, repeat: 2 }`] : []),
         ...refs.filter((r) => r.note).map((r) => `${r.ref}: ${r.note}.`),
         ...(res?.inbox?.length ? [`In Inbox (no module): ${res.inbox.join("; ")}.`] : []),
         ...(res?.removed?.length ? [`Moved to QA Hub's recycle bin: ${res.removed.join(", ")}.`] : []),
