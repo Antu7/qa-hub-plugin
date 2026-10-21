@@ -134,14 +134,17 @@ export function updateNote(latest, current = VERSION) {
 }
 
 /**
- * The git branch this checkout is on, or null: a detached HEAD, a folder that isn't a checkout, no git, and anything
- * under ~/qa_hub (QA Hub's own copy of the tests, never the developer's feature branch).
+ * The git branch this checkout is on, or null: a detached HEAD, a folder that isn't a checkout, no git, a checkout
+ * that is the home folder itself (a dotfiles repo), and anything under ~/qa_hub (QA Hub's own copy of the tests,
+ * never the developer's feature branch). Paths are resolved through symlinks (and case-folded where the disk is) so a
+ * link or a differently written path into ~/qa_hub can't slip past.
  */
-export function gitBranch(cwd) {
-  const rel = path.relative(path.join(os.homedir(), "qa_hub"), path.resolve(cwd));
+export function gitBranch(cwd, home = os.homedir()) {
+  const real = (p) => { let r; try { r = fs.realpathSync.native(p); } catch { r = path.resolve(p); } return process.platform === "darwin" || process.platform === "win32" ? r.toLowerCase() : r; };
+  const rel = path.relative(real(path.join(home, "qa_hub")), real(cwd));
   if (!rel.startsWith("..") && !path.isAbsolute(rel)) return null;
   try {
-    const b = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 }).trim();
-    return b && b !== "HEAD" ? b : null;
+    const [top, b] = execFileSync("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000, killSignal: "SIGKILL" }).trim().split("\n");
+    return !b || b === "HEAD" || real(top) === real(home) ? null : b;
   } catch { return null; }
 }

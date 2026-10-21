@@ -7,8 +7,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
-import { gitBranch } from "../server/qahub.mjs";
+import { gitBranch, newer, serverUrl, updateNote, DEFAULT_SERVER } from "../server/qahub.mjs";
 import { appRoot, describeProject, describeRun, pathProblem, readAppFile, tools, unprovenTests } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -176,6 +175,32 @@ test("no branch from ~/qa_hub, a detached HEAD or a non-git folder", () => {
     git("checkout", "-q", "--detach");
     assert.equal(gitBranch(dir), null);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("gitBranch can't be slipped past ~/qa_hub by a symlink or capitals, and a repo in the home folder gives no branch", () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-home-")));
+  const { dir } = checkout("feature-x"); // a real checkout outside the fake home
+  try {
+    const mine = path.join(home, "qa_hub", "freight");
+    fs.mkdirSync(mine, { recursive: true });
+    execFileSync("git", ["-C", mine, "init", "-q", "-b", "feature-x"]);
+    assert.equal(gitBranch(mine, home), null, "under qa_hub");
+    fs.symlinkSync(mine, path.join(dir, "link"));
+    assert.equal(gitBranch(path.join(dir, "link"), home), null, "a symlink into qa_hub");
+    const homeLink = path.join(os.tmpdir(), `qahub-homelink-${process.pid}`);
+    fs.symlinkSync(home, homeLink);
+    try { assert.equal(gitBranch(path.join(homeLink, "qa_hub", "freight"), homeLink), null, "a symlinked home"); } finally { fs.rmSync(homeLink); }
+    if (["darwin", "win32"].includes(process.platform)) assert.equal(gitBranch(mine.replace("qa_hub", "QA_Hub"), home), null, "other capitals");
+    assert.equal(gitBranch(dir, home), "feature-x", "a checkout elsewhere still has its branch");
+    // A dotfiles repo in the home folder itself (and a folder in it that isn't its own checkout): no branch.
+    execFileSync("git", ["-C", home, "init", "-q", "-b", "main"]);
+    fs.writeFileSync(path.join(home, "f"), "x");
+    execFileSync("git", ["-C", home, "-c", "user.name=t", "-c", "user.email=t@t.test", "add", "f"]);
+    execFileSync("git", ["-C", home, "-c", "user.name=t", "-c", "user.email=t@t.test", "commit", "-q", "-m", "dots"]);
+    fs.mkdirSync(path.join(home, "shop"));
+    assert.equal(gitBranch(home, home), null);
+    assert.equal(gitBranch(path.join(home, "shop"), home), null);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the address: https, or plain http only on this computer / local network", () => {
