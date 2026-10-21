@@ -50,7 +50,7 @@ When the folder is a git checkout on a feature branch (the hook names it), the p
 2. **Update the affected tests**: `qahub_find` for each page, flow and changed file the feature touches; where a test no longer matches the new behaviour, `qahub_pull` it and change it in place, keeping their titles (a new title is a new test). Remove a test only when the feature removes what it covers.
 3. **Prove all of them twice locally** (`try_tests`, `repeat: 2`) — the new and the updated.
 4. **`qahub_learn`** what you learned about the changed parts of the app, so the next Claude doesn't read it again.
-5. **One `qahub_push`** with everything. QA Hub keeps it waiting until the feature reaches each place (staging, production…): each place switches to these tests only when its own run shows the feature has arrived. The reply says what is waiting; don't push again to "check".
+5. **Push once** — one `qahub_push` with everything. QA Hub keeps it waiting until the feature reaches each place (staging, production…): each place switches to these tests only when its own run shows the feature has arrived. The reply says what is waiting; don't push again to "check".
 
 ## The test standard — what a client (technical or not) expects to see
 
