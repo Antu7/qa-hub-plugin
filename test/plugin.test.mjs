@@ -940,7 +940,7 @@ test("Claude sees who a test can sign in as — names, roles, places — and wha
 });
 
 test("the path rule matches QA Hub's (apps/web/src/lib/paths.ts): .env files and node_modules are refused both ways", () => {
-  for (const p of [".env", ".env.local", "package.json", "package-lock.json", "playwright.config.ts", "playwright.config.js"]) {
+  for (const p of [".env", ".env.local", "package.json", "package-lock.json", "playwright.config.ts", "playwright.config.js", "qahub-reporter.cjs"]) {
     assert.ok(pathProblem(p), `${p} is QA Hub's own file`);
   }
   for (const p of ["node_modules/x/index.js", "e2e/Node_Modules/y.ts"]) assert.match(pathProblem(p) ?? "", /node_modules/, p);

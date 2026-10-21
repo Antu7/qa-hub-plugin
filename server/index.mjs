@@ -28,7 +28,7 @@ const SLOW = 120_000; // a push or a pull carries whole files
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ALLOWED = /\.(ts|js|mjs|cjs|json|csv|txt|xml|png|jpe?g|gif|webp|svg|bmp|pdf|xlsx?|docx?|pptx|zip|mp4|mov|mp3|wav)$/i;
 // Kept equal to QA Hub's apps/web/src/lib/paths.ts RESERVED (test/plugin.test.mjs pins the list).
-const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json", ".env", ".env.local"]);
+const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json", ".env", ".env.local", "qahub-reporter.cjs"]);
 export function pathProblem(rel) {
   if (typeof rel !== "string" || !rel || rel.length > 300) return "not a usable path";
   if (rel.includes("\\")) return "use forward slashes";
