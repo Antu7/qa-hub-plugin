@@ -19,6 +19,7 @@ const started = [];
 let polls = 0, blips = 0;
 const notes = [];
 const learned = [];
+const saves = []; // knowledge others saved: { module, topics, at }
 const pulls = []; // each qahub_pull's query: ?branch= on a feature branch
 let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } };
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
@@ -37,12 +38,16 @@ const server = http.createServer((req, res) => {
     if (!KEYS[key] && req.method === "POST") return out(402, { error: { code: "plan_expired", message: "Your QA Hub plan has ended." } });
     if (u.pathname === "/api/v1/projects") return out(200, { projects: [{ slug: "freight", name: "Freight portal" }] });
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "GET") {
+      // Topics others saved after `since`, by module (QA Hub 2026-10-22+); only=updated: that alone.
+      const since = u.searchParams.get("since");
+      const updated = since ? saves.filter((x) => x.at > since) : undefined;
+      if (u.searchParams.get("only") === "updated") return out(200, { updated });
       const q = { topic: "Quotes", body: "## Journey\n- open: /quotes (code)", files: [], sha: null, by: "Ana", updatedAt: "2026-10-17T06:00:00.123Z", upToDate: true, size: 30 };
       const where = u.searchParams.get("where") === "none" ? undefined : { place: "Staging", branch: "staging", production: null, newOnBranch: "2 commits ahead of main · pages changed: /quotes\n- Quote export" };
       // What QA Hub's explorer saw in the real app: no commit to compare with, dated per part.
       const o = { topic: "observed: Quotes", body: "OBSERVED in the real app…\n## On Staging as admin — observed 2026-10-21\n### /quotes — Quotes\n- Table columns: Customer | Amount", files: [], sha: null, by: "QA Hub (explored the app as each test account)", updatedAt: "2026-10-21T06:00:00.000Z", unknown: "saved without a commit", size: 90 };
-      if (u.searchParams.get("module")) return out(200, { entries: [q, o], where });
-      return out(200, { entries: [{ ...q, body: undefined, summary: "open: /quotes" }, { ...o, body: undefined, summary: "what Quotes looks like in the real app — observed on Staging as admin" }], where, index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes", "observed: Quotes"], modules: [] }], overall: [] } });
+      if (u.searchParams.get("module")) return out(200, { entries: [q, o], where, updated });
+      return out(200, { updated, entries: [{ ...q, body: undefined, summary: "open: /quotes" }, { ...o, body: undefined, summary: "what Quotes looks like in the real app — observed on Staging as admin" }], where, index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes", "observed: Quotes"], modules: [] }], overall: [] } });
     }
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
     if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"],
@@ -1031,6 +1036,30 @@ test("knowledge: the index first, a module in one call, and a save never lands o
   await t.qahub_knowledge({ module: "Quotes" });
   await t.qahub_learn({ topic: "quotes", body: "## Journey\n- open: /quotes (seen)", files: [] });
   assert.equal(learned.at(-1).basedOn, "2026-10-17T06:00:00.123Z", "the version it read, whatever the capitals");
+});
+
+test("knowledge: no notice before any save", async () => {
+  const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base }, app, fetch, { sessionStart: new Date() });
+  await t.qahub_link({ project: "freight" });
+  assert.doesNotMatch(await t.qahub_knowledge({}), /Knowledge updated/);
+  assert.doesNotMatch(await t.qahub_plan({ tests: [{ title: "Open quotes", module: "Quotes", steps: ["Open"] }] }), /Knowledge updated/);
+});
+
+test("knowledge: the notice names modules saved after the session started", async () => {
+  const start = new Date();
+  saves.push({ module: "Old", topics: ["Old"], at: new Date(start.getTime() - 60_000).toISOString() }); // before the session: not news
+  const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base }, app, fetch, { sessionStart: start });
+  await t.qahub_link({ project: "freight" });
+  assert.doesNotMatch(await t.qahub_knowledge({ module: "Quotes" }), /Knowledge updated/);
+  saves.push({ module: "Quotes", topics: ["Quotes", "page /quotes"], at: new Date(Date.now() + 1).toISOString() },
+    { module: "Order Items", topics: ["page /order-items"], at: new Date(Date.now() + 5).toISOString() });
+  const read = await t.qahub_knowledge({ module: "Quotes" });
+  assert.match(read, /^Knowledge updated 0 min ago — modules: Quotes, Order Items — re-read them before writing more\.\n\nTesting Staging/);
+  assert.doesNotMatch(await t.qahub_knowledge({}), /Knowledge updated/, "told once");
+  // A save during planning: qahub_plan's reply says it first.
+  saves.push({ module: "Invoices", topics: ["Invoices"], at: new Date(Date.now() + 10).toISOString() });
+  assert.match(await t.qahub_plan({ tests: [{ title: "Open quotes", module: "Quotes", steps: ["Open"] }] }), /^Knowledge updated 0 min ago — modules: Invoices — re-read them/);
+  saves.length = 0;
 });
 
 test("the recorder chat saves only proven tests: passed twice with this exact code, or marked a known app bug", async () => {

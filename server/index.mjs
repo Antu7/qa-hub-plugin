@@ -153,7 +153,7 @@ export const TOOLS = [
     name: "qahub_knowledge",
     description: "What QA Hub knows about this app, kept for the whole team and filed like an index: under each module (its own topic — journey, fields and rules, test data that works, bugs — and its pages' topics), then overall (the code map, \"app\", pages in no module). Read it BEFORE the code: faster, and it saves your usage. Without arguments: the index, with whether each topic is up to date (changed: files the code changed since). module: everything filed under that module, in full — read only the module you work on. topic: one topic in full.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
-      module: { type: "string", description: "A module's name (or address): its topics in full" },
+      module: { type: "string", description: "A module's name, its address, or a page's address in it: its topics in full" },
       topic: { type: "string", description: "One topic in full: a module's name, \"page /address\", \"app\"" },
       project: { type: "string", description: "Leave out to use the linked project" },
     } },
@@ -479,9 +479,22 @@ function moduleFor(s, modules, t) {
   return null;
 }
 
-export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch, { pollMs = 3_000, waitMs = 5 * 60_000 } = {}) {
+// When this session started (this process): knowledge saved after it is news to the Claude that read it at the start.
+const SESSION_START = new Date(Date.now() - process.uptime() * 1000);
+
+export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch, { pollMs = 3_000, waitMs = 5 * 60_000, sessionStart = SESSION_START } = {}) {
   const qa = client({ key: env.QAHUB_KEY, server: env.QAHUB_SERVER, fetchImpl });
   const root = appRoot(cwd);
+  // Per project: saves after this were not told yet. Each is told once — then `since` moves past it.
+  const since = new Map();
+  const sinceOf = (p) => encodeURIComponent((since.get(p) ?? sessionStart).toISOString());
+  const notice = (p, updated) => {
+    if (!updated?.length) return "";
+    const newest = new Date(updated.map((u) => u.at).sort().at(-1));
+    since.set(p, newest);
+    const min = Math.max(0, Math.round((Date.now() - newest.getTime()) / 60_000));
+    return `Knowledge updated ${min} min ago — modules: ${updated.map((u) => u.module ?? u.topics.join(", ")).join(", ")} — re-read them before writing more.\n\n`;
+  };
   const projectOf = (arg) => {
     const p = arg ?? linkedProject(root);
     if (!p) throw new QaHubError("This app folder isn't linked to a QA Hub project yet. Ask which project it is (qahub_status lists them), then call qahub_link.");
@@ -557,13 +570,16 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       for (const x of res.updated ?? []) lines.push(`- ${x.ref} “${x.title}” in ${x.module}`);
       if (res.behaviours?.added?.length) lines.push(`Behaviours added${res.review ? " (proposed until approved)" : ""}: ${res.behaviours.added.join(", ")}.`);
       for (const d of res.behaviours?.dropped ?? []) lines.push(`“${d}” was dropped by a person — don't propose it again or test it.`);
-      return lines.join("\n") || "Nothing planned.";
+      // ponytail: a second, cheap call (an older QA Hub ignores only=updated and answers with the index — no notice then).
+      const news = await qa.call("GET", `/api/v1/projects/${p}/knowledge?since=${sinceOf(p)}&only=updated`).catch(() => null);
+      return notice(p, news?.updated) + (lines.join("\n") || "Nothing planned.");
     },
     async qahub_knowledge({ topic, module, project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       const t = String(topic ?? "").trim(), m = String(module ?? "").trim();
-      const { entries, index, where } = await qa.call("GET", `/api/v1/projects/${p}/knowledge${t ? `?topic=${encodeURIComponent(t)}` : m ? `?module=${encodeURIComponent(m)}` : ""}`);
+      const { entries, index, where, updated } = await qa.call("GET", `/api/v1/projects/${p}/knowledge?${t ? `topic=${encodeURIComponent(t)}&` : m ? `module=${encodeURIComponent(m)}&` : ""}since=${sinceOf(p)}`);
+      const told = notice(p, updated);
       // Where this QA is testing and on which branch of the code (QA Hub 2026-10-20+): said first, with what's new there.
       const place = !where ? "" : `Testing ${where.place ?? "the app"} — code branch ${where.branch ?? "the default"}${where.production ? ` (production: ${where.production})` : ""}.${where.newOnBranch ? `\nNot in production yet:\n${where.newOnBranch}` : ""}${where.note ? `\n${where.note}` : ""}\n\n`;
       // The version of each topic read in full: a save of it carries this, so it never lands over a newer one.
@@ -572,13 +588,13 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const seen = (e) => /^observed: /i.test(e.topic);
       const state = (e) => (seen(e) ? "OBSERVED in the real app (each part says where, as whom and when) — trust it over the code-made page topics when they differ" : e.upToDate ? "up to date" : e.changed ? `OUT OF DATE — changed since: ${e.changed.join(", ")}` : `can't tell if current (${e.unknown})`);
       const full = (e) => `## ${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
-      if (t) return full(entries[0]);
+      if (t) return told + full(entries[0]);
       if (m) {
-        if (!entries.length) return `${place}Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
+        if (!entries.length) return `${told}${place}Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
         const later = entries.filter((e) => e.more);
-        return place + [...entries.filter((e) => !e.more).map(full), ...(later.length ? [`More filed under ${m}, not shown to keep this short — read one when you need it with qahub_knowledge { topic }: ${later.map((e) => `“${e.topic}”${e.summary ? ` (${e.summary})` : ""}`).join(", ")}`] : [])].join("\n\n");
+        return told + place + [...entries.filter((e) => !e.more).map(full), ...(later.length ? [`More filed under ${m}, not shown to keep this short — read one when you need it with qahub_knowledge { topic }: ${later.map((e) => `“${e.topic}”${e.summary ? ` (${e.summary})` : ""}`).join(", ")}`] : [])].join("\n\n");
       }
-      if (!entries.length) return `${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn into the module's topic (topic = its name; "page /…" topics are QA Hub's, made from the code — it refuses saves to them) so the next Claude doesn't have to.`;
+      if (!entries.length) return `${told}${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn into the module's topic (topic = its name; "page /…" topics are QA Hub's, made from the code — it refuses saves to them) so the next Claude doesn't have to.`;
       const by = new Map(entries.map((e) => [e.topic, e]));
       const mark = (name) => { const e = by.get(name); return !e ? name : seen(e) ? `${name} (observed in the real app${e.summary ? `: ${e.summary.replace(/^what .+? looks like in the real app — /, "")}` : ""})` : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
       const lines = ["The index — read only the module you work on (qahub_knowledge { module }), or one topic (qahub_knowledge { topic }):"];
@@ -590,7 +606,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       lines.push(`Overall: ${rest.map((x) => `${x}${by.get(x)?.summary ? ` (${by.get(x).summary})` : ""}${by.get(x)?.changed ? " ⚠ out of date" : ""}`).join(" · ") || "nothing"}`);
       if (pages.length) lines.push(`Pages in no module yet: ${pages.map((x) => x.slice(5)).join(", ")}`);
       lines.push("A module's topic says its journey, fields and rules, where it shows, test data that works, values refused, bugs; “observed: <module>” (QA Hub's explorer) is what each test account really saw there — fields and their limits, columns, what buttons open — trust it over the code when they differ; a page's (QA Hub's, made from the code) says what a user sees there and its validation. A module topic out of date: re-read just those files, then save it again — what you saw on a page goes into its module's topic, never a “page /…” one.");
-      return place + lines.join("\n");
+      return told + place + lines.join("\n");
     },
 
     async qahub_code({ path, search, under, project } = {}) {
