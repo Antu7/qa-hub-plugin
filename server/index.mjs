@@ -240,7 +240,7 @@ export const TOOLS = [
               applied: { type: "boolean", description: "true when this push applies the change request qahub_gaps listed for this test" },
               sets: { type: "array", items: { type: "string" }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
               distinctFrom: { type: "array", items: { type: "string" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
-              knownBug: { type: "string", maxLength: 300, description: "Only in the recorder chat, only for a test that checks the RIGHT behaviour and fails because the APP is wrong: what is wrong, in plain words. Such a test is saved tagged known-bug (the person sees it) — every other test must have passed twice in try_tests first. Tell the person too (\"Needs you: …\")." },
+              knownBug: { type: "string", maxLength: 300, description: "Only in the recorder chat, only for a test that checks the RIGHT behaviour and fails because the APP is wrong: what is wrong, in plain words. Such a test is saved tagged known-bug (the person sees it) — every other test must have passed in try_tests first. Tell the person too (\"Needs you: …\")." },
               data: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" }, value: { type: "string", maxLength: 500 }, variable: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$", description: "A project variable (qahub_project → Variables, or one you send in variables) that gives this value a NEW value every run; value stays the fallback" } } }, description: "The values the test types: name (lower_snake_case), default, and — for anything whose exact value doesn't decide what the test proves (names, titles, emails, amounts, dates, notes) — variable, so every run tries different data. The code reads them: const data = JSON.parse(process.env.QAHUB_DATA ?? \"{}\"); data.course_title ?? \"Fire safety basics\" — and checks the app shows data.course_title, never a hard-coded copy. A person's own choice (a value made fixed or linked elsewhere) survives your push. Leave out = unchanged" },
               runAs: { type: "string", description: "The test account this test starts signed in as — a name from qahub_project's Test accounts, chosen by ROLE for what the test proves (a permission test runs as the role that should, or shouldn't, be allowed). Leave out for the default account. Switching mid-test: await qahub.signInAs(page, \"<name>\"); a second person at the same time: const other = await qahub.as(\"<name>\") — a second signed-in page (take qahub from the test's fixtures), name written out" },
               needs: { type: "array", maxItems: 10, items: { type: "string" }, description: "ONLY when this test uses what another test makes (\"Delete the order\" needs \"Create an order\"): that test's ref or exact title (one in this push counts). It then runs first, and if it fails this test is skipped — every other test still runs. Leave out for an independent test (the normal case); [] removes a link" },
@@ -846,11 +846,12 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       }
       // Passed twice on this computer with this exact code (try_tests): QA Hub counts them verified — no run of its own.
       const proven = provenTests(root, tests);
-      // The recorder chat saves only what was proven: each test passed twice in try_tests with its code exactly as
-      // sent — or is marked a known app bug (tagged, so the person sees it). Refused here, before anything is sent.
+      // The recorder chat saves only what was tried: each test passed in try_tests with its code exactly as sent — or is
+      // marked a known app bug (tagged, so the person sees it). Refused here, before anything is sent. One pass is
+      // enough to save; QA Hub's own credit (above) still needs two.
       if (process.env.QAHUB_CHAT && tests.length) {
         const unproven = unprovenTests(root, tests);
-        if (unproven.length) throw new QaHubError(`Not proven yet: ${unproven.map((t) => `“${t.title}” (${t.why})`).join("; ")}. Try ${unproven.length === 1 ? "it" : "them"} with try_tests (repeat: 2) until ${unproven.length === 1 ? "it passes" : "they pass"} twice with this exact code — or, if one fails only because the APP is wrong, keep the right check and push it with knownBug: "<what's wrong>" and tell the person ("Needs you: …"). Nothing was sent.`);
+        if (unproven.length) throw new QaHubError(`Not proven yet: ${unproven.map((t) => `“${t.title}” (${t.why})`).join("; ")}. Try ${unproven.length === 1 ? "it" : "them"} with try_tests until ${unproven.length === 1 ? "it passes" : "they pass"} with this exact code — or, if one fails only because the APP is wrong, keep the right check and push it with knownBug: "<what's wrong>" and tell the person ("Needs you: …"). Nothing was sent.`);
         for (const t of tests) if (t.knownBug) {
           t.tags = [...new Set([...(t.tags ?? []), "known-bug"])];
           t.description = `Known bug: ${String(t.knownBug).trim()}${t.description ? ` — ${t.description}` : ""}`.slice(0, 600);
@@ -884,7 +885,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         ...(refs.length ? [`Tests: ${refs.map((r) => `${r.ref} “${r.title}”${r.module ? ` in ${r.module}` : ""}`).join(", ")}.`] : []),
         ...(credited.length ? [`Proven on this computer — passed twice with this exact code — so QA Hub counts ${credited.length === 1 ? "it" : "them"} as verified, no QA Hub run needed: ${credited.map((r) => r.ref).join(", ")}.`] : []),
         // Waiting: no place runs them yet (a run would try the live versions, or skip them) — proven here is what counts.
-        ...(toRun.length && !w ? [`Run ${credited.length ? "the rest" : "them"} now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(toRun.map((r) => r.ref))}, repeat: 2 }`] : []),
+        // The recorder chat is done once it saved (one pass): QA Hub's own runs give the second pass, and the credit.
+        ...(toRun.length && !w ? [process.env.QAHUB_CHAT
+          ? `Saved — nothing more to run here. QA Hub counts ${toRun.length === 1 ? "it" : "them"} once QA Hub's runs pass ${toRun.length === 1 ? "it" : "them"} twice.`
+          : `Run ${credited.length ? "the rest" : "them"} now, twice — a new or changed test only counts once it has passed twice: qahub_run { tests: ${JSON.stringify(toRun.map((r) => r.ref))}, repeat: 2 }`] : []),
         ...refs.filter((r) => r.note).map((r) => `${r.ref}: ${r.note}.`),
         ...(res?.inbox?.length ? [`In Inbox (no module): ${res.inbox.join("; ")}.`] : []),
         ...(res?.removed?.length ? [`Moved to QA Hub's recycle bin: ${res.removed.join(", ")}.`] : []),
@@ -895,7 +899,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
 }
 
 /**
- * The tests in a push that haven't passed twice in try_tests with their file exactly as it is now (connector's
+ * The tests in a push that haven't passed in try_tests with their file exactly as it is now (connector's
  * try.mjs writes the proof beside the kept records: ~/qa_hub/<project>/.qahub/proof.json). Exported for its test.
  */
 /**
@@ -947,7 +951,7 @@ function helpersOf(src, file, read) {
 
 export function unprovenTests(root, tests) {
   const proof = proofOf(root);
-  return tests.filter((t) => !t.knownBug).map((t) => ({ title: t.title, why: notProven(root, proof, t) })).filter((x) => x.why);
+  return tests.filter((t) => !t.knownBug).map((t) => ({ title: t.title, why: notProven(root, proof, t, 1) })).filter((x) => x.why);
 }
 
 /** "file#title" of each test in a push that passed twice on this computer with its code as sent: QA Hub credits them. */
@@ -958,8 +962,8 @@ export function provenTests(root, tests) {
 
 // In the project's own folder: ~/qa_hub/<project>/.qahub/proof.json.
 const proofOf = (root) => { try { return JSON.parse(fs.readFileSync(path.join(root, ".qahub", "proof.json"), "utf8")); } catch { return {}; } };
-/** Why a test isn't proven twice with its file as it is now, or null when it is. */
-function notProven(root, proof, t) {
+/** Why a test hasn't passed `need` tries in a row with its file as it is now, or null when it has. */
+function notProven(root, proof, t, need = 2) {
   let content = null;
   try { content = fs.readFileSync(path.join(root, t.file), "utf8"); } catch { /* not on disk */ }
   const p = proof[`${t.file}#${t.title}`];
@@ -968,7 +972,7 @@ function notProven(root, proof, t) {
   // A connector from 0.10.21 also proves the helpers a test imports (sha2) — checked when there; an older one's proof (sha
   // only) is checked the way it was made, so a plugin and connector updated at different times never block a push.
   const same = !p || content === null ? false : p.sha2 !== undefined ? p.sha2 === sha1(proofText(content, t.title, t.file, read)) : p.sha === sha1(proofText(content, t.title));
-  return !p ? "never tried" : !same ? "its code, or a helper it imports, changed since it last passed" : p.streak < 2 ? (p.streak === 1 ? "passed once, not twice" : "its last try failed") : null;
+  return !p ? "never tried" : !same ? "its code, or a helper it imports, changed since it last passed" : p.streak < need ? (p.streak >= 1 ? "passed once, not twice" : "its last try failed") : null;
 }
 
 /** A repo's address (https://github.com/o/n.git, git@github.com:o/n, ssh://…) or "o/n" as "o/n", lower-case; a folder on disk: null. */
