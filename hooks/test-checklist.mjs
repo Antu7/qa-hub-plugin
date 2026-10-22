@@ -17,6 +17,7 @@ export const isTestFile = (p) => typeof p === "string" && /\.(spec|test)\.[cm]?[
 
 /** What to tell Claude for this tool call, or null. `seen` is the once-per-session marker file. */
 export function checklistFor(input, seen) {
+  if (process.env.QAHUB_CHAT) return null; // the recorder chat: its own instructions say how (no cleanup, one try, no QA Hub runs)
   const file = input?.tool_input?.file_path ?? input?.tool_input?.path;
   if (!isTestFile(file)) return null;
   // Only in an app linked to QA Hub: a Jest or Vitest file in any other project is none of QA Hub's business.

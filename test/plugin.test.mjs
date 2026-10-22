@@ -311,6 +311,22 @@ test("the Playwright checklist is handed over once per session, only for test fi
   fs.rmSync(seen);
 });
 
+test("the recorder chat gets no checklist hook (its own instructions say how: no cleanup, no QA Hub runs twice), and qahub_project doesn't send it to run a test twice", async () => {
+  const { checklistFor } = await import("../hooks/test-checklist.mjs");
+  const seen = path.join(os.tmpdir(), `qahub-checklist-chat-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  const project = { name: "EHS", slug: "ehs", environments: [], sets: [], tags: [], folders: [], helpers: [], modules: [{ name: "Training", path: "/training", tests: 1 }],
+    tests: [{ ref: "TEST-00044", title: "Create a course", file: "e2e/course.spec.ts", module: "Training", steps: ["Open"], verified: false, passes: 1 }] };
+  assert.match(describeProject(project, "Training"), /not counted yet: passed 1 of 2 times[^\n]*run it \(repeat: 2\)/, "the terminal is still told to run it");
+  process.env.QAHUB_CHAT = "1";
+  try {
+    assert.equal(checklistFor({ cwd: app, tool_input: { file_path: "tests/quotes.spec.ts" } }, seen), null);
+    const said = describeProject(project, "Training");
+    assert.match(said, /not counted yet: passed 1 of 2 times/);
+    assert.doesNotMatch(said, /run it|repeat: 2/);
+  } finally { delete process.env.QAHUB_CHAT; fs.rmSync(seen, { force: true }); }
+});
+
 test("status says whether tests can run now: the computer, the environments", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });

@@ -391,7 +391,8 @@ export function describeProject(s, module) {
       if (!want) continue; // steps and data: one module at a time
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
       // Its test data (QAHUB_DATA) as QA Hub holds it: a person may have changed a value, or made it vary each run.
-      if (t.verified === false) list.push(`    not counted yet: passed ${t.passes ?? 0} of 2 times since its code changed — run it (repeat: 2)`);
+      // The recorder chat is done once a test passed and was saved: QA Hub's own runs give the second pass.
+      if (t.verified === false) list.push(`    not counted yet: passed ${t.passes ?? 0} of 2 times since its code changed${process.env.QAHUB_CHAT ? "" : " — run it (repeat: 2)"}`);
       if (t.data?.length) list.push(`    data: ${t.data.map((d) => (d.varies ? `${d.name} (different every run${d.variable ? `: ${d.variable}` : ""})` : `${d.name} = “${d.value}”${d.fixedByPerson ? " (fixed by a person — leave it)" : ""}`)).join(", ")}`);
     }
   }
