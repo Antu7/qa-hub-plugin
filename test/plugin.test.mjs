@@ -1059,6 +1059,25 @@ test("knowledge: the notice names modules saved after the session started", asyn
   // A save during planning: qahub_plan's reply says it first.
   saves.push({ module: "Invoices", topics: ["Invoices"], at: new Date(Date.now() + 10).toISOString() });
   assert.match(await t.qahub_plan({ tests: [{ title: "Open quotes", module: "Quotes", steps: ["Open"] }] }), /^Knowledge updated 0 min ago — modules: Invoices — re-read them/);
+  // …and qahub_push's.
+  saves.push({ module: "Billing", topics: ["Billing"], at: new Date(Date.now() + 15).toISOString() });
+  assert.match(await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] }), /^Knowledge updated 0 min ago — modules: Billing — re-read them[\s\S]*Sent to QA Hub/);
+  // The module this very reply shows in full isn't news — and it isn't told later either.
+  saves.push({ module: "Quotes", topics: ["Quotes", "observed: Quotes"], at: new Date(Date.now() + 20).toISOString() });
+  assert.doesNotMatch(await t.qahub_knowledge({ module: "Quotes" }), /Knowledge updated/);
+  assert.doesNotMatch(await t.qahub_knowledge({}), /Knowledge updated/);
+  saves.length = 0;
+});
+
+test("knowledge: the recorder chat's tools count from QAHUB_KNOWLEDGE_SINCE, not from their own (fresh) start", async () => {
+  const earlier = new Date(Date.now() - 10 * 60_000);
+  saves.push({ module: "Quotes", topics: ["Quotes"], at: new Date(Date.now() - 5 * 60_000).toISOString() }); // during the last answer
+  const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base, QAHUB_KNOWLEDGE_SINCE: earlier.toISOString() }, app, fetch);
+  await t.qahub_link({ project: "freight" });
+  assert.match(await t.qahub_knowledge({}), /^Knowledge updated 5 min ago — modules: Quotes — re-read them/);
+  // Not a date: the session's own start counts (the save above is older, so it isn't news).
+  const bad = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base, QAHUB_KNOWLEDGE_SINCE: "soon" }, app, fetch, { sessionStart: new Date() });
+  assert.doesNotMatch(await bad.qahub_knowledge({}), /Knowledge updated/);
   saves.length = 0;
 });
 

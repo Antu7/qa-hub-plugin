@@ -486,15 +486,21 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
   const qa = client({ key: env.QAHUB_KEY, server: env.QAHUB_SERVER, fetchImpl });
   const root = appRoot(cwd);
   // Per project: saves after this were not told yet. Each is told once — then `since` moves past it.
+  // The recorder chat relaunches these tools for every answer: it says since when (QAHUB_KNOWLEDGE_SINCE, chat.mjs).
+  const start = Number.isNaN(Date.parse(env.QAHUB_KNOWLEDGE_SINCE ?? "")) ? sessionStart : new Date(env.QAHUB_KNOWLEDGE_SINCE);
   const since = new Map();
-  const sinceOf = (p) => encodeURIComponent((since.get(p) ?? sessionStart).toISOString());
-  const notice = (p, updated) => {
+  const sinceOf = (p) => encodeURIComponent((since.get(p) ?? start).toISOString());
+  // `read`: topics this very reply shows in full — not news, but `since` still moves past them.
+  const notice = (p, updated, read = new Set()) => {
     if (!updated?.length) return "";
-    const newest = new Date(updated.map((u) => u.at).sort().at(-1));
-    since.set(p, newest);
-    const min = Math.max(0, Math.round((Date.now() - newest.getTime()) / 60_000));
-    return `Knowledge updated ${min} min ago — modules: ${updated.map((u) => u.module ?? u.topics.join(", ")).join(", ")} — re-read them before writing more.\n\n`;
+    since.set(p, new Date(updated.map((u) => u.at).sort().at(-1)));
+    const news = updated.filter((u) => !u.topics.every((t) => read.has(t.toLowerCase())));
+    if (!news.length) return "";
+    const min = Math.max(0, Math.round((Date.now() - Date.parse(news.map((u) => u.at).sort().at(-1))) / 60_000));
+    return `Knowledge updated ${min} min ago — modules: ${news.map((u) => u.module ?? u.topics.join(", ")).join(", ")} — re-read them before writing more.\n\n`;
   };
+  // ponytail: a second, cheap call (an older QA Hub ignores only=updated and answers with the index — no notice then).
+  const newsOf = async (p) => notice(p, (await qa.call("GET", `/api/v1/projects/${p}/knowledge?since=${sinceOf(p)}&only=updated`).catch(() => null))?.updated);
   const projectOf = (arg) => {
     const p = arg ?? linkedProject(root);
     if (!p) throw new QaHubError("This app folder isn't linked to a QA Hub project yet. Ask which project it is (qahub_status lists them), then call qahub_link.");
@@ -570,16 +576,14 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       for (const x of res.updated ?? []) lines.push(`- ${x.ref} “${x.title}” in ${x.module}`);
       if (res.behaviours?.added?.length) lines.push(`Behaviours added${res.review ? " (proposed until approved)" : ""}: ${res.behaviours.added.join(", ")}.`);
       for (const d of res.behaviours?.dropped ?? []) lines.push(`“${d}” was dropped by a person — don't propose it again or test it.`);
-      // ponytail: a second, cheap call (an older QA Hub ignores only=updated and answers with the index — no notice then).
-      const news = await qa.call("GET", `/api/v1/projects/${p}/knowledge?since=${sinceOf(p)}&only=updated`).catch(() => null);
-      return notice(p, news?.updated) + (lines.join("\n") || "Nothing planned.");
+      return (await newsOf(p)) + (lines.join("\n") || "Nothing planned.");
     },
     async qahub_knowledge({ topic, module, project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       const t = String(topic ?? "").trim(), m = String(module ?? "").trim();
       const { entries, index, where, updated } = await qa.call("GET", `/api/v1/projects/${p}/knowledge?${t ? `topic=${encodeURIComponent(t)}&` : m ? `module=${encodeURIComponent(m)}&` : ""}since=${sinceOf(p)}`);
-      const told = notice(p, updated);
+      const told = notice(p, updated, new Set(entries.filter((e) => e.body !== undefined).map((e) => e.topic.toLowerCase())));
       // Where this QA is testing and on which branch of the code (QA Hub 2026-10-20+): said first, with what's new there.
       const place = !where ? "" : `Testing ${where.place ?? "the app"} — code branch ${where.branch ?? "the default"}${where.production ? ` (production: ${where.production})` : ""}.${where.newOnBranch ? `\nNot in production yet:\n${where.newOnBranch}` : ""}${where.note ? `\n${where.note}` : ""}\n\n`;
       // The version of each topic read in full: a save of it carries this, so it never lands over a newer one.
@@ -870,7 +874,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const toRun = refs.filter((r) => !credited.includes(r));
       const w = res?.waiting;
       const count = (x) => (Array.isArray(x) ? x.length : x ?? 0); // QA Hub sends the refs
-      return [
+      return (await newsOf(p)) + [
         `Sent to QA Hub (${p}): ${files.length} file(s), ${tests.length} test(s).`,
         ...(w ? [`Waiting for ${w.branch ?? branch}: ${count(w.newTests)} new tests, ${count(w.updated)} updated — QA Hub switches each place to them when that place's run shows the feature has arrived.${w.note ? ` ${w.note}` : ""}`] : []),
         ...(res?.variables?.created?.length ? [`Variables created: ${res.variables.created.join(", ")} — each run now draws new values for the data linked to them.`] : []),
