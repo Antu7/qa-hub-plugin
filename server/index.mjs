@@ -169,9 +169,10 @@ export const TOOLS = [
   {
     name: "qahub_learn",
     description: "Save what you learned about this app's code so the next Claude (any teammate's) needn't read it again: one topic — \"app\" for the whole, or a module — in plain words a tester can use (routes and their source files; each form's fields, required ones, formats and limits; success and error messages; who may do what; the main flows and their edge cases). Facts, not code. Give the files you read and the commit (git rev-parse HEAD). Saving a topic again replaces it.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["topic", "body", "files"], properties: {
+    inputSchema: { type: "object", additionalProperties: false, required: ["topic", "files"], properties: {
       topic: { type: "string" },
-      body: { type: "string", description: "Plain-words facts, up to ~20,000 characters" },
+      body: { type: "string", description: "The WHOLE topic, plain-words facts, up to ~20,000 characters — replaces what is saved. To add what you found to a topic that exists, send add instead" },
+      add: { type: "object", additionalProperties: { type: "array", items: { type: "string" } }, description: "Only your new facts, by section — e.g. { \"Fields and rules\": [\"Country: a combobox — type, then pick (seen on staging)\"], \"Test data that works\": [\"VAT DE 811569869 (seen on staging)\"] }. QA Hub merges them into the topic (repeats dropped; a field's newer browser fact replaces its older one; a missing module section is added). Much faster than sending the whole topic" },
       files: { type: "array", items: { type: "string" }, description: "Source files it came from, paths from the repo root" },
       sha: { type: "string", description: "The commit it reflects (git rev-parse HEAD), if this folder is a git checkout" },
       project: { type: "string", description: "Leave out to use the linked project" },
@@ -644,9 +645,15 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       return `Mapped: ${r.modules} modules (${r.added} new${r.renamed ? `, ${r.renamed} renamed` : ""}${r.removed ? `, ${r.removed} removed` : ""}${r.kept ? `, ${r.kept} kept because tests still use them` : ""}). QA Hub now shows what has no tests — qahub_gaps.`;
     },
 
-    async qahub_learn({ topic, body, files, sha, project } = {}) {
+    async qahub_learn({ topic, body, add, files, sha, project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
+      // New lines only: QA Hub merges them into whatever version is there — no basedOn, nothing to clobber.
+      if (add && body === undefined) {
+        const branch = gitBranch(root);
+        await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, add, files: files ?? [], ...(sha ? { sha } : {}), ...(branch ? { branch } : {}) });
+        return `Added to “${topic}” — every teammate's Claude reads it now.`;
+      }
       // basedOn: the version this session read ("new" if it never read it — then it must not exist yet). Recorded on
       // reads only, so after any save — another helper's, or this one's — the topic is read again before the next save.
       const branch = gitBranch(root); // a feature branch's knowledge waits for the feature, like its tests

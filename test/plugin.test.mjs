@@ -1244,3 +1244,15 @@ test("push sends each file's base — QA Hub's sha of the copy it was pulled as 
     fs.rmSync(path.join(app, "tests/helpers"), { recursive: true, force: true });
   }
 });
+
+test("qahub_learn add: only the new lines by section — no whole topic, no basedOn (the server merges into whatever is there)", async () => {
+  const t = as("qh_good");
+  const said = await t.qahub_learn({ project: "freight", topic: "Quotes", add: { "Bugs and quirks": ["Saving twice makes two quotes (seen on staging)"] }, files: [] });
+  assert.deepEqual(learned.at(-1).add, { "Bugs and quirks": ["Saving twice makes two quotes (seen on staging)"] });
+  assert.ok(!("body" in learned.at(-1)) && !("basedOn" in learned.at(-1)), JSON.stringify(learned.at(-1)));
+  assert.match(said, /Added to “Quotes”/);
+  const { TOOLS } = await import("../server/index.mjs");
+  const tool = TOOLS.find((x) => x.name === "qahub_learn");
+  assert.deepEqual(tool.inputSchema.required, ["topic", "files"]);
+  assert.ok(tool.inputSchema.properties.add, "add is offered");
+});
