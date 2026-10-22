@@ -168,7 +168,7 @@ export const TOOLS = [
   },
   {
     name: "qahub_learn",
-    description: "Save what you learned about this app's code so the next Claude (any teammate's) needn't read it again: one topic — \"app\" for the whole, or a module — in plain words a tester can use (routes and their source files; each form's fields, required ones, formats and limits; success and error messages; who may do what; the main flows and their edge cases). Facts, not code. Give the files you read and the commit (git rev-parse HEAD). Saving a topic again replaces it.",
+    description: "Save what you found about this app so the next Claude (any teammate's) needn't find it again: one topic — \"app\" for the whole, or a module. Send add — only your new facts, by section of the topic (preferred: QA Hub merges them into what's there, in no time); body replaces the whole topic (for a topic you wrote from the code). Plain words a tester can use (routes and their source files; each form's fields, required ones, formats and limits; success and error messages; who may do what; the main flows and their edge cases). Facts, not code. Give the files they came from and, from a checkout, the commit (git rev-parse HEAD).",
     inputSchema: { type: "object", additionalProperties: false, required: ["topic", "files"], properties: {
       topic: { type: "string" },
       body: { type: "string", description: "The WHOLE topic, plain-words facts, up to ~20,000 characters — replaces what is saved. To add what you found to a topic that exists, send add instead" },
@@ -596,11 +596,11 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const full = (e) => `## ${e.topic} — by ${e.by || "someone"}, ${e.updatedAt.slice(0, 10)}, ${state(e)}\nFiles: ${e.files.join(", ") || "none listed"}\n\n${e.body}`;
       if (t) return told + full(entries[0]);
       if (m) {
-        if (!entries.length) return `${told}${place}Nothing filed under “${m}” yet. Read the code for it, then save the module's topic (topic = its name) with qahub_learn.`;
+        if (!entries.length) return `${told}${place}Nothing filed under “${m}” yet. Read the code for it, then save what you found into the module's topic (topic = its name) with qahub_learn { topic, add }.`;
         const later = entries.filter((e) => e.more);
         return told + place + [...entries.filter((e) => !e.more).map(full), ...(later.length ? [`More filed under ${m}, not shown to keep this short — read one when you need it with qahub_knowledge { topic }: ${later.map((e) => `“${e.topic}”${e.summary ? ` (${e.summary})` : ""}`).join(", ")}`] : [])].join("\n\n");
       }
-      if (!entries.length) return `${told}${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn into the module's topic (topic = its name; "page /…" topics are QA Hub's, made from the code — it refuses saves to them) so the next Claude doesn't have to.`;
+      if (!entries.length) return `${told}${place}Nothing learned about this app yet. Read the code for what you need, then save it with qahub_learn { topic, add } into the module's topic (topic = its name; "page /…" topics are QA Hub's, made from the code — it refuses saves to them) so the next Claude doesn't have to.`;
       const by = new Map(entries.map((e) => [e.topic, e]));
       const mark = (name) => { const e = by.get(name); return !e ? name : seen(e) ? `${name} (observed in the real app${e.summary ? `: ${e.summary.replace(/^what .+? looks like in the real app — /, "")}` : ""})` : `${name.startsWith("page ") ? name.slice(5) : `${name} (module topic${e.summary ? `: ${e.summary}` : ""})`}${e.changed ? " ⚠ out of date" : ""}`; };
       const lines = ["The index — read only the module you work on (qahub_knowledge { module }), or one topic (qahub_knowledge { topic }):"];

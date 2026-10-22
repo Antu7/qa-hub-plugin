@@ -1256,3 +1256,13 @@ test("qahub_learn add: only the new lines by section — no whole topic, no base
   assert.deepEqual(tool.inputSchema.required, ["topic", "files"]);
   assert.ok(tool.inputSchema.properties.add, "add is offered");
 });
+
+test("the plugin steers every Claude to add new facts, not to re-send whole topics", async () => {
+  const { TOOLS } = await import("../server/index.mjs");
+  const learn = TOOLS.find((x) => x.name === "qahub_learn").description;
+  assert.match(learn, /^Save what you found[^.]*\. Send add/);
+  assert.match(learn, /body replaces the whole topic/);
+  assert.doesNotMatch(learn, /Saving a topic again replaces it/);
+  const skill = fs.readFileSync(new URL("../skills/write-tests/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /qahub_learn \{ topic, add \}/);
+});
