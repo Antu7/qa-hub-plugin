@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.50";
+export const VERSION = "0.7.51";
 /** Where QA Hub lives unless the plugin settings name another address. One place, used by the server and the hooks. */
 export const DEFAULT_SERVER = "https://app.qahub.dev";
 

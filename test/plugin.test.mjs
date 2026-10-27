@@ -349,11 +349,9 @@ test("qahub_run runs on the person's computer, waits, and says what failed, wher
   // Not waiting: it says the number to ask about.
   assert.match(await t.qahub_run({ tag: "smoke", wait: false, show: true }), /Run #8 started/);
   assert.deepEqual(started.at(-1), { tag: "smoke", headless: false });
-  // Production: only sent when asked for in so many words (QA Hub refuses tests not tagged read-only there otherwise).
-  await t.qahub_run({ tag: "smoke", wait: false, environment: "Production", allowProduction: true });
-  assert.deepEqual(started.at(-1), { allowProduction: true, tag: "smoke", environment: "Production", headless: true });
-  await t.qahub_run({ tag: "smoke", wait: false, allowProduction: "yes" });
-  assert.equal(started.at(-1).allowProduction, undefined, "only a real true counts");
+  // Production runs like any place: named, nothing else asked.
+  await t.qahub_run({ tag: "smoke", wait: false, environment: "Production" });
+  assert.deepEqual(started.at(-1), { tag: "smoke", environment: "Production", headless: true });
   await t.qahub_run({ tag: "smoke", wait: false, parallel: 8 });
   assert.deepEqual(started.at(-1), { tag: "smoke", headless: true, parallel: 8 }, "how many at once goes along");
   await assert.rejects(t.qahub_run({ tag: "smoke", module: "Quotes" }), /one of/);
