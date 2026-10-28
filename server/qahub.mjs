@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.54";
+export const VERSION = "0.7.55";
 /** Where QA Hub lives unless the plugin settings name another address. One place, used by the server and the hooks. */
 export const DEFAULT_SERVER = "https://app.qahub.dev";
 
@@ -57,15 +57,18 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
     if (/\s/.test(key) || key.length > 200) throw new QaHubError("The QA Hub API key in the plugin settings has spaces or line breaks in it — paste it again.", "no_key");
     return (base ??= serverUrl(String(server ?? "").trim() || DEFAULT_SERVER));
   };
-  /** One request. `timeout` (ms) is longer for a push or a pull, which carry whole files. */
-  async function call(method, path, body, { timeout = timeoutMs, again = true } = {}) {
+  /**
+   * One request. `timeout` (ms) is longer for a push or a pull, which carry whole files. `headers`: extra ones, sent on
+   * the retry too — a run start's Idempotency-Key, so the retry after a blip is the same run, never a second one.
+   */
+  async function call(method, path, body, { timeout = timeoutMs, again = true, headers = {} } = {}) {
     const origin = ready();
     const slow = () => new QaHubError(`QA Hub at ${origin} didn't answer within ${Math.round(timeout / 1000)} s.`, "timeout");
     let res, text;
     try {
       res = await fetchImpl(origin + path, {
         method,
-        headers: { Authorization: `Bearer ${key}`, "User-Agent": `qahub-claude-plugin/${VERSION}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+        headers: { ...headers, Authorization: `Bearer ${key}`, "User-Agent": `qahub-claude-plugin/${VERSION}`, ...(body ? { "Content-Type": "application/json" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         redirect: "error",
         signal: AbortSignal.timeout(timeout),
@@ -80,7 +83,7 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
     // A 404 or 5xx with no QA Hub explanation is QA Hub restarting or being updated — not "not found": one more try in
     // a few seconds, then said as it is.
     if (!res.ok && !json?.error && [404, 502, 503, 504].includes(res.status)) {
-      if (again) { await new Promise((r) => setTimeout(r, 3_000)); return call(method, path, body, { timeout, again: false }); }
+      if (again) { await new Promise((r) => setTimeout(r, 3_000)); return call(method, path, body, { timeout, again: false, headers }); }
       throw new QaHubError(`QA Hub at ${origin} isn't answering properly right now (${res.status} — it may be restarting or updating). Nothing was saved; try again in a minute.`, "unavailable");
     }
     if (!res.ok) throw explain(res.status, json, origin);

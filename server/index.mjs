@@ -3,7 +3,7 @@
 // No dependencies. Every tool checks the API key first (see qahub.mjs) — a revoked key or an ended plan
 // stops it within a minute, whatever the session already had.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -781,7 +781,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (Array.isArray(tests) && !tests.length) throw new QaHubError("No tests named (tests is empty), so nothing was run. Name the refs (qahub_push returns them), or pick a tag, module or set.");
       if ([tests?.length ? tests : null, tag, module, set].filter(Boolean).length > 1) throw new QaHubError("Pick tests by one of: tests, tag, module or set.");
       const body = { ...(tests?.length ? { tests } : {}), ...(tag ? { tag } : {}), ...(module ? { module } : {}), ...(set ? { set } : {}), ...(environment ? { environment } : {}), ...(browser ? { browser } : {}), headless: where === "server" || !show, ...(repeat > 1 ? { repeat } : {}), ...(parallel ? { parallel } : {}), ...(where === "server" ? { where } : {}) };
-      const { run } = await qa.call("POST", `/api/v1/projects/${p}/runs/start`, body).catch((e) => {
+      // One key per call: the client's own retry after a blip sends it again, so QA Hub answers with the run this call started.
+      const { run } = await qa.call("POST", `/api/v1/projects/${p}/runs/start`, body, { headers: { "Idempotency-Key": randomUUID() } }).catch((e) => {
         // Not connected (or an old qahub): what the person does about it, in one line Claude can relay.
         if (/Connect your computer/i.test(e.message)) throw new QaHubError(`${e.message} Tell the person once: in QA Hub → Computers, run the connect command it shows in a terminal on the computer where the app runs, and leave it open. Until then the tests are sent but not run.`);
         throw e;

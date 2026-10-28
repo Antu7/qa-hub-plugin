@@ -16,6 +16,7 @@ const pushed = [];
 const planned = [];
 let planReview = false;
 const started = [];
+const keys = []; // the Idempotency-Key of each run-start try
 let polls = 0, blips = 0;
 const notes = [];
 const learned = [];
@@ -92,6 +93,12 @@ const server = http.createServer((req, res) => {
       plain: "The “Title” box in the “Create training” dialog should have been empty, but it still said “QA Cancel 1”.", technical: "expect(locator).toHaveValue(expected) failed",
       ...(u.searchParams.get("shots") === "0" ? {} : { screenshot: { base64: PNG.toString("base64"), type: "image/png" } }) }] });
     if (u.pathname === "/api/v1/projects/freight/fixes/TEST-00005" && req.method === "POST") { notes.push(JSON.parse(b)); return out(200, { ok: true }); }
+    // A blip on the first try of a run start (QA Hub restarting): every try's Idempotency-Key is kept.
+    if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "retry") {
+      keys.push(req.headers["idempotency-key"]);
+      if (keys.length % 2) { res.writeHead(503); return res.end(); }
+      return out(200, { run: { number: 11, tests: 1, environment: "Local", url: "/p/freight/runs/11" } });
+    }
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "again") return out(200, { run: { number: 8, tests: 2, environment: "Local", url: "/p/freight/runs/8", alreadyStarted: true } });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "blip") { blips = 0; return out(200, { run: { number: 9, tests: 1, environment: "Local", url: "/p/freight/runs/9" } }); }
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "down") return out(200, { run: { number: 10, tests: 1, environment: "Local", url: "/p/freight/runs/10" } });
@@ -614,6 +621,18 @@ test("following a run: a blip is asked again; if QA Hub stays down, the run numb
   await t.qahub_link({ project: "freight" });
   assert.match(await t.qahub_run({ tag: "blip" }), /Run #9 finished/);
   await assert.rejects(t.qahub_run({ tag: "down" }), /Run #10 was started[\s\S]*qahub_results \{ run: 10, wait: true \}[\s\S]*Don't start it again/);
+});
+
+test("a run start that hits a blip is tried again with the SAME Idempotency-Key — QA Hub answers with that run, never a second one", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  assert.match(await t.qahub_run({ tag: "retry", wait: false }), /Run #11 started/);
+  assert.match(await t.qahub_run({ tag: "retry", wait: false }), /Run #11 started/);
+  assert.equal(keys.length, 4);
+  assert.match(keys[0], /^[0-9a-f-]{36}$/);
+  assert.equal(keys[1], keys[0], "the retry carries its call's key");
+  assert.equal(keys[3], keys[2]);
+  assert.notEqual(keys[2], keys[0], "a new call is a new key");
 });
 
 test("qahub_run with an empty test list runs nothing — never the whole project", async () => {
