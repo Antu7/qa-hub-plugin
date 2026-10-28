@@ -11,7 +11,7 @@ import { gitBranch, newer, serverUrl, updateNote, DEFAULT_SERVER } from "../serv
 import { appRoot, describeProject, describeRun, pathProblem, provenTests, readAppFile, tools, unprovenTests } from "../server/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const KEYS = { "qh_good": true, "qh_expired": false }; // key → plan active; anything else is revoked
+const KEYS = { "qh_good": true, "qh_expired": false, "qh_nopc": true }; // qh_nopc: no computer connected // key → plan active; anything else is revoked
 const pushed = [];
 const planned = [];
 let planReview = false;
@@ -34,7 +34,7 @@ const server = http.createServer((req, res) => {
     const out = (status, body) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
     if (!(key in KEYS)) return out(401, { error: { code: "unauthorized", message: "Missing, invalid or revoked API key" } });
     const u = new URL(req.url, "http://x");
-    if (u.pathname === "/api/v1/me") return out(200, { user: { name: "Ana", email: "ana@acme.test" }, company: { name: "Acme", plan: "trial", active: KEYS[key], expiresAt: "2026-12-01T00:00:00.000Z" }, role: "owner", computer: { name: "MacBook", version: "0.9.21" } });
+    if (u.pathname === "/api/v1/me") return out(200, { user: { name: "Ana", email: "ana@acme.test" }, company: { name: "Acme", plan: "trial", active: KEYS[key], expiresAt: "2026-12-01T00:00:00.000Z" }, role: "owner", computer: key === "qh_nopc" ? null : { name: "MacBook", version: "0.9.21" } });
     if (!KEYS[key] && req.method === "POST") return out(402, { error: { code: "plan_expired", message: "Your QA Hub plan has ended." } });
     if (u.pathname === "/api/v1/projects") return out(200, { projects: [{ slug: "freight", name: "Freight portal" }] });
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "GET") {
@@ -49,6 +49,7 @@ const server = http.createServer((req, res) => {
       if (u.searchParams.get("module")) return out(200, { entries: [q, o], where, updated });
       return out(200, { updated, entries: [{ ...q, body: undefined, summary: "open: /quotes" }, { ...o, body: undefined, summary: "what Quotes looks like in the real app — observed on Staging as admin" }], where, index: { modules: [{ module: "Quotes", path: "/quotes", topics: ["Quotes", "observed: Quotes"], modules: [] }], overall: [] } });
     }
+    if (u.pathname === "/api/v1/projects/keepgo") return out(200, { slug: "keepgo", tests: [{ ref: "TEST-00006", title: "Hazardous SDS", stage: "active", file: "a.spec.ts", verified: false, passes: 0 }] });
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
     if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"],
       environments: [{ name: "Local", url: "http://localhost:3000", kind: "local" }],
@@ -882,6 +883,9 @@ test("build-check on a feature branch asks for new tests, the affected tests' up
     const out = buildCheck({ cwd: dir }, edit(dir), fresh());
     assert.equal(out.decision, "block");
     for (const re of [/feature-x/, /qahub_find/, /affected/, /keeping? (their|its) titles/, /twice/, /qahub_learn/, /one qahub_push/, /one line/, /QA Hub keeps it waiting/]) assert.match(out.reason, re);
+    // Before the push nothing of the branch can run here: proven after it, only where this branch runs.
+    assert.doesNotMatch(out.reason, /twice locally/);
+    assert.match(out.reason, /qahub_push — QA Hub keeps it waiting[^.]*; prove [^.]*only on a place that runs this branch/);
     assert.equal(buildCheck({ cwd: dir }, edit(dir), (() => { const s = fresh(); fs.writeFileSync(s, ""); return s; })()), null, "still once per session");
     assert.equal(buildCheck({ cwd: dir, stop_hook_active: true }, edit(dir), fresh()), null, "still never loops");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -901,6 +905,9 @@ test("the write-tests skill has an 'On a feature branch' section", () => {
   const skill = fs.readFileSync(path.join(HERE, "../skills/write-tests/SKILL.md"), "utf8");
   const sec = skill.split("## On a feature branch")[1]?.split("\n## ")[0] ?? "";
   for (const re of [/qahub_find/, /affected/, /keeping? (their|its) titles/, /twice/, /qahub_learn/, /one `qahub_push`/, /waiting until the feature reaches/]) assert.match(sec, re);
+  // try_tests is Eclipse's (the recorder chat) only: the plugin proves with qahub_run, where this branch runs.
+  assert.doesNotMatch(sec, /try_tests/);
+  assert.match(sec, /qahub_run \{ tests: [^}]*repeat: 2 \}[^\n]*a place that runs this branch|only when it runs this branch/);
 });
 
 test("you changed what a test uses (plan auto-heal Phase 1): an edit that removes words tests still look for says which lines, and Claude can't finish while they still do", async () => {
@@ -986,6 +993,8 @@ test("one Stop answer: changed app code AND stale test words come back as one bl
   assert.equal(out.decision, "block");
   assert.match(out.reason, /no tests went to QA Hub[\s\S]*Tests still look for words/, "both reasons, one message");
   assert.equal(stopCheck({ cwd: root, stop_hook_active: true }, edit, { seen, state }), null, "never loops");
+  // 2026-10-28: Eclipse's chat (QAHUB_CHAT) has its own loop — its helper files under qahub/ are not "the app changed".
+  assert.equal(stopCheck({ cwd: root, stop_hook_active: false }, edit, { seen, state }, { QAHUB_CHAT: "1" }), null, "never inside Eclipse's chat");
   const hooks = JSON.parse(fs.readFileSync(path.join(HERE, "../hooks/hooks.json"), "utf8")).hooks.Stop;
   assert.equal(hooks.flatMap((h) => h.hooks).length, 1, "one Stop hook, not two");
 });
@@ -1179,6 +1188,37 @@ test("keep going never extends another hook's send-back, and never runs in the r
   assert.equal(await keepGoingCheck({ cwd: root }, "", path.join(root, "rounds.json"), { QAHUB_CHAT: "1" }), null);
 });
 
+test("keep going sends back only on progress: a qahub tool called since the last send-back, and a computer to run on", async () => {
+  const { keepGoing, qahubCalls } = await import("../hooks/keep-going.mjs");
+  const left = { waiting: [{ ref: "TEST-00007", title: "Non-hazardous SDS" }], write: [], fix: [{ ref: "TEST-00006", title: "Hazardous SDS", passes: 0 }] };
+  const use = (name) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name, input: {} }] } });
+  const said = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "qahub_run: sent, not run" }] } });
+  assert.equal(qahubCalls([use("mcp__plugin_qahub_qahub__qahub_run"), use("Bash"), said, use("mcp__qahub__qahub_push"), "not json"].join("\n")), 2);
+  assert.equal(keepGoing(left, { n: 0, waits: 0 }, "", false, { calls: 0 })?.decision, "block", "the first send-back needs no progress yet");
+  assert.equal(keepGoing(left, { n: 1, waits: 0, calls: 3 }, "", false, { calls: 3 }), null, "no qahub tool since the last send-back: not again");
+  assert.equal(keepGoing(left, { n: 1, waits: 0, calls: 3 }, "", false, { calls: 4 })?.decision, "block", "it did something: on");
+  // No computer connected: running and fixing can't happen — only the review wait is left; with nothing waiting, it stops.
+  const off = keepGoing(left, { n: 0, waits: 0 }, "", false, { computer: false });
+  assert.doesNotMatch(off.reason, /TEST-00006/);
+  assert.match(off.reason, /qahub_wait_review/);
+  assert.equal(keepGoing({ ...left, waiting: [] }, { n: 0, waits: 0 }, "", false, { computer: false }), null);
+
+  // The hook: whoami says whether a computer is connected; the rounds file keeps the calls counted at each send-back.
+  const { keepGoingCheck } = await import("../hooks/stop.mjs");
+  const { building } = await import("../server/index.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qh-keep-"));
+  fs.writeFileSync(path.join(root, "qahub.json"), JSON.stringify({ project: "keepgo" }));
+  building(root, ["TEST-00006"]);
+  const env = { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base };
+  const rounds = path.join(root, "rounds.json");
+  const t1 = use("mcp__plugin_qahub_qahub__qahub_run");
+  assert.equal((await keepGoingCheck({ cwd: root }, t1, rounds, env))?.decision, "block");
+  assert.equal(JSON.parse(fs.readFileSync(rounds, "utf8")).calls, 1);
+  assert.equal(await keepGoingCheck({ cwd: root, stop_hook_active: true }, t1, rounds, env), null, "nothing called since: not sent back again");
+  assert.equal((await keepGoingCheck({ cwd: root, stop_hook_active: true }, `${t1}\n${t1}`, rounds, env))?.decision, "block");
+  assert.equal(await keepGoingCheck({ cwd: root }, "", path.join(root, "other.json"), { ...env, CLAUDE_PLUGIN_OPTION_API_KEY: "qh_nopc" }), null, "no computer: nothing to prove");
+});
+
 test("push from the recorder chat: a test that passed once is saved and the chat isn't sent to run it again", async () => {
   const { createHash } = await import("node:crypto");
   const { proofText } = await import("../server/index.mjs");
@@ -1263,4 +1303,13 @@ test("the plugin steers every Claude to add new facts, not to re-send whole topi
   assert.doesNotMatch(learn, /Saving a topic again replaces it/);
   const skill = fs.readFileSync(new URL("../skills/write-tests/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /qahub_learn \{ topic, add \}/);
+});
+
+test("a fix for a test whose app didn't finish loading says to rerun it unchanged once, not to change it (2026-10-29)", async () => {
+  const { readOf } = await import("../server/index.mjs");
+  const said = readOf({ failKind: "setup", technical: "Your app didn't finish loading: GET /api/orders waiting 32 s · locator.click: Timeout 15000ms exceeded." });
+  assert.match(said, /^QA Hub's read: a step couldn't be done/);
+  assert.match(said, /\nYour app didn't finish loading when it failed: rerun it unchanged once \(qahub_run\) — if it happens again, the app is slow or down; don't change the test for it\.$/);
+  assert.equal(readOf({ failKind: "bug", technical: "expect(locator).toHaveText failed" }), "QA Hub's read: the app broke.");
+  assert.equal(readOf({}), "");
 });

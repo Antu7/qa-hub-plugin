@@ -337,6 +337,12 @@ export const TOOLS = [
 
 const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)",
   setup: "a step couldn't be done (covered, hidden, disabled, a page that didn't open), so the test never reached its checks — find what got in the way before calling it a bug" };
+/**
+ * QA Hub's read of a failed test, in words Claude acts on. An app that didn't finish loading (one of its own calls never
+ * came back — the CLI says so first in the error): rerun it unchanged once, never change the test for it. Exported for its test.
+ */
+export const readOf = (f = {}) => [f.failKind ? `QA Hub's read: ${KIND[f.failKind] ?? f.failKind}.` : "",
+  /didn't finish loading/i.test(`${f.technical ?? ""} ${f.plain ?? ""}`) ? "Your app didn't finish loading when it failed: rerun it unchanged once (qahub_run) — if it happens again, the app is slow or down; don't change the test for it." : ""].filter(Boolean).join("\n");
 /** A run, in words Claude acts on: what failed, where, why, and the page with the video and trace. */
 /** Where a failure happened: the page (address, title, what it showed), the failing code lines, the values typed. */
 export function whereItFailed(ctx, values) {
@@ -807,7 +813,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           `Steps: ${f.steps.join(" → ")}`,
           `What went wrong: ${f.plain ?? "?"}`,
           f.technical && f.technical !== f.plain ? `Playwright said: ${f.technical}` : "",
-          f.failKind ? `QA Hub's read: ${KIND[f.failKind] ?? f.failKind}.` : "",
+          readOf(f),
           `Run page (video and trace): ${qa.origin()}${f.url}`,
           whereItFailed(f.context, f.values).trim(),
           f.screenshot ? "The screenshot of the moment it failed:" : "No screenshot for this one.",

@@ -48,9 +48,9 @@ The person may only say "automate this", "test the training page" or "I want neg
 When the folder is a git checkout on a feature branch (the hook names it), the push is the feature's one hand-off. Do this once the feature works:
 1. **Write the tests for the new feature** (steps 3-6 above).
 2. **Update the affected tests**: `qahub_find` for each page, flow and changed file the feature touches; where a test no longer matches the new behaviour, `qahub_pull` it and change it in place, keeping their titles (a new title is a new test). Remove a test only when the feature removes what it covers.
-3. **Prove all of them twice locally** (`try_tests`, `repeat: 2`) — the new and the updated.
-4. **`qahub_learn`** what you learned about the changed parts of the app, so the next Claude doesn't read it again.
-5. **Push once** — one `qahub_push` with everything. QA Hub keeps it waiting until the feature reaches each place (staging, production…): each place switches to these tests only when its own run shows the feature has arrived. The reply says what is waiting; don't push again to "check".
+3. **`qahub_learn`** what you learned about the changed parts of the app, so the next Claude doesn't read it again.
+4. **Push once** — one `qahub_push` with everything. QA Hub keeps it waiting until the feature reaches each place (staging, production…): each place switches to these tests only when its own run shows the feature has arrived. The reply says what is waiting; don't push again to "check".
+5. **Prove them twice on this computer** only when it runs this branch in QA Hub (Settings → Code branches, "My computer"): `qahub_run { tests: [the new and updated refs], environment: <that place>, repeat: 2 }`. Otherwise each place proves them when the feature arrives — never run them against another branch's app.
 
 ## The test standard — what a client (technical or not) expects to see
 

@@ -10,12 +10,16 @@ import path from "node:path";
 import { isMain } from "../server/qahub.mjs";
 import { buildCheck } from "./build-check.mjs";
 import { staleCheck } from "./ui-change.mjs";
-import { keepGoing, leftOf } from "./keep-going.mjs";
+import { keepGoing, leftOf, qahubCalls } from "./keep-going.mjs";
 import { appRoot, building, reviewState } from "../server/index.mjs";
 import { client } from "../server/qahub.mjs";
 
-/** Both checks' answers as one Stop answer, or null. */
-export function stopCheck(input, transcript, { seen, state }) {
+/**
+ * Both checks' answers as one Stop answer, or null. Never in Eclipse's chat (QAHUB_CHAT): its helpers under qahub/ aren't
+ * the app changing, and its own loop decides when it's done (2026-10-28: it was sent back, adding a stray paragraph).
+ */
+export function stopCheck(input, transcript, { seen, state }, env = process.env) {
+  if (env.QAHUB_CHAT) return null;
   const reasons = [];
   for (const check of [() => buildCheck(input, transcript, seen), () => staleCheck(input, state)]) {
     try { const out = check(); if (out?.decision === "block") reasons.push(out.reason); } catch { /* never block on an error */ }
@@ -49,12 +53,14 @@ export async function keepGoingCheck(input, transcript, roundsFile, env = proces
   if (!refs.length) return null;
   const project = JSON.parse(fs.readFileSync(path.join(root, "qahub.json"), "utf8")).project;
   if (!/^[a-z0-9-]{1,60}$/.test(project ?? "")) return null;
-  const qa = client({ key: process.env.CLAUDE_PLUGIN_OPTION_API_KEY, server: process.env.CLAUDE_PLUGIN_OPTION_SERVER, timeoutMs: 8_000 });
-  const left = leftOf((await reviewState(qa, project)).tests, refs);
+  const qa = client({ key: env.CLAUDE_PLUGIN_OPTION_API_KEY, server: env.CLAUDE_PLUGIN_OPTION_SERVER, timeoutMs: 8_000 });
+  const [state, me] = await Promise.all([reviewState(qa, project), qa.whoami()]);
+  const left = leftOf(state.tests, refs);
   let rounds = { n: 0, waits: 0 };
   try { rounds = JSON.parse(fs.readFileSync(roundsFile, "utf8")); } catch { /* first stop */ }
-  const out = keepGoing(left, rounds, input.last_assistant_message ?? lastText(transcript), !!input.stop_hook_active);
-  if (out) fs.writeFileSync(roundsFile, JSON.stringify({ n: rounds.n + 1, waits: rounds.waits + (left.write.length + left.fix.length ? 0 : 1) }));
+  const calls = qahubCalls(transcript);
+  const out = keepGoing(left, rounds, input.last_assistant_message ?? lastText(transcript), !!input.stop_hook_active, { calls, computer: !!me?.computer });
+  if (out) fs.writeFileSync(roundsFile, JSON.stringify({ n: rounds.n + 1, waits: rounds.waits + (me?.computer && left.write.length + left.fix.length ? 0 : 1), calls }));
   return out;
 }
 

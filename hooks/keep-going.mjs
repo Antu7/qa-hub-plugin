@@ -1,7 +1,9 @@
 // Keep going: Claude is about to stop while tests it is building in this folder aren't done — waiting for review,
 // approved with no code, or not passed twice yet. It goes back to work with what's left, round after round, until
 // each is done. It stops when it needs the person ("Needs you:"), after MAX rounds, or when waiting alone has
-// taken an hour (the person may be away). Never in the recorder chat (stop.mjs): it has its own loop and caps.
+// taken an hour (the person may be away), when no qahub tool was called since its last send-back (no progress: saying it
+// again won't help — e.g. tests "sent, not run"), and leaves running and fixing out when no computer is connected.
+// Never in the recorder chat (stop.mjs): it has its own loop and caps.
 export const MAX = 15, MAX_WAIT = 4;
 
 /** What is left of the tests being built: { waiting, write, fix }, from the project's tests by ref. */
@@ -17,14 +19,31 @@ export function leftOf(tests, refs) {
   return out;
 }
 
+/** How many qahub tools Claude called in this session, from the transcript (JSONL). */
+export function qahubCalls(transcript) {
+  let n = 0;
+  for (const line of transcript.split("\n")) {
+    if (!line.includes("qahub_")) continue;
+    try {
+      const e = JSON.parse(line);
+      if (e.type === "assistant") n += (e.message?.content ?? []).filter((c) => c.type === "tool_use" && /__qahub_\w+$/.test(c.name ?? "")).length;
+    } catch { /* not JSON */ }
+  }
+  return n;
+}
+
 /**
  * The Stop answer, or null. `rounds`: { n, waits } this session so far. `active` (stop_hook_active): Claude is already
  * carrying on because a Stop hook sent it back — it goes on only in rounds this hook counted, so it ends by MAX; another
- * hook's send-back is never extended. ponytail: counted per session, not per chain.
+ * hook's send-back is never extended. `calls`: qahub tools called so far (qahubCalls) — the same as at the last send-back
+ * (rounds.calls) is no progress. `computer`: one is connected (whoami); without it nothing runs, so only a review wait is left.
+ * ponytail: counted per session, not per chain.
  */
-export function keepGoing(left, rounds, lastText = "", active = false) {
+export function keepGoing(left, rounds, lastText = "", active = false, { calls, computer = true } = {}) {
   if (active && !(rounds.n > 0)) return null;
   if (/(^|\n)\s*\**needs you:/i.test(lastText)) return null;
+  if (rounds.n > 0 && calls !== undefined && rounds.calls !== undefined && calls <= rounds.calls) return null;
+  if (!computer) left = { ...left, write: [], fix: [] };
   const working = left.write.length + left.fix.length;
   if (!working && !left.waiting.length) return null;
   if (rounds.n >= MAX) return null;
