@@ -265,6 +265,7 @@ export const TOOLS = [
         },
         remove: { type: "array", items: { type: "string" }, description: "Refs of tests to take out on purpose (they go to QA Hub's recycle bin) — e.g. a test deleted from its file. Never to get past a refusal." },
         labels: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "description"], properties: { name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,29}$" }, description: { type: "string", maxLength: 200, description: "What the label means, in plain words a non-tester understands" } } }, description: "New labels a test of this push uses that qahub_project's Labels doesn't have — only when no existing label fits. An existing label is never changed here." },
+        expectChanged: { type: "string", minLength: 10, maxLength: 300, description: "ONLY when QA Hub refused a fix for expecting exactly what the failing run saw AND the app really changed on purpose — why (kept in the test's history). If the app is wrong, keep the check: the failure is the bug" },
         fewerChecks: { type: "string", minLength: 20, maxLength: 300, description: "ONLY when a check (expect) truly has to go because the app changed on purpose — the real reason. While a person has asked you to fix a test, a push that removes checks is refused without it; never use it to make a failing test pass" },
         modules: { type: "array", items: { type: "object", properties: { name: { type: "string" }, path: { type: "string" }, parent: { type: "string", description: "The parent module's path, for a sub-page (e.g. /quotes for /quotes/print)" } }, required: ["name", "path"] }, description: "Modules the app has that QA Hub doesn't yet (qahub_project lists what exists): each with its URL path and, for a sub-page, its parent's path. QA Hub adds them; it never renames an existing module." },
       },
@@ -846,7 +847,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.call("POST", `/api/v1/projects/${p}/fixes/${test}`, { kind, note });
       return `Noted on ${test} in QA Hub. Now run it again: qahub_run { tests: ["${test}"] } — a pass marks it fixed.`;
     },
-    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [], variables = [], labels = [], fewerChecks } = {}) {
+    async qahub_push({ project, files = [], tests: given = [], modules = [], remove = [], behaviours = [], variables = [], labels = [], fewerChecks, expectChanged } = {}) {
       await qa.whoami();
       const p = projectOf(project);
       const tests = given.map((t) => (typeof t?.file === "string" ? { ...t, file: t.file.replaceAll("\\", "/") } : t)); // a Windows path
@@ -875,7 +876,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const branch = gitBranch(root); // on a feature branch QA Hub keeps this push waiting until the feature reaches each place
       // Each file's base: QA Hub's sha of the copy the edit here started from — a shared helper a teammate changed since is refused.
       const base = bases(root);
-      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}), ...(branch ? { branch } : {}) };
+      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(expectChanged ? { expectChanged } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}), ...(branch ? { branch } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {

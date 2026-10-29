@@ -786,6 +786,9 @@ test("run each test 5× to check for flaky ones; a push that removes checks carr
   assert.equal(started.at(-1).headless, true);
   await t.qahub_push({ files: ["tests/quotes.spec.ts"], fewerChecks: "The old price banner was removed from the app on purpose" });
   assert.equal(pushed.at(-1).fewerChecks, "The old price banner was removed from the app on purpose");
+  // QA Hub refuses a fix that expects exactly what the failing run saw unless it says why: the tool must be able to say it.
+  await t.qahub_push({ files: ["tests/quotes.spec.ts"], expectChanged: "The app now publishes on save, on purpose (ticket 812)" });
+  assert.equal(pushed.at(-1).expectChanged, "The app now publishes on save, on purpose (ticket 812)");
   // Test data: the values the code reads from QAHUB_DATA, declared with the test (a person can change them in QA Hub).
   const { TOOLS } = await import("../server/index.mjs");
   const push = TOOLS.find((x) => x.name === "qahub_push"); // Claude Code checks a call against this schema
