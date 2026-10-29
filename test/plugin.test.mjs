@@ -1143,6 +1143,11 @@ test("the recorder chat saves only tried tests: passed once with this exact code
   assert.deepEqual(unprovenTests(dir, [t("D")]), [{ title: "D", why: "its last try failed" }]);
   assert.deepEqual(unprovenTests(dir, [t("C")]), [{ title: "C", why: "never tried" }]);
   assert.deepEqual(unprovenTests(dir, [t("B", { knownBug: "the app accepts a bad email" })]), []);
+  // A bug is said as a finding that waits for approval — never "Needs you", which parks the chat until the person answers.
+  const { TOOLS } = await import("../server/index.mjs");
+  const kb = TOOLS.find((x) => x.name === "qahub_push").inputSchema.properties.tests.items.properties.knownBug.description;
+  assert.match(kb, /Bug found:/);
+  assert.doesNotMatch(kb, /Needs you/);
   fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), code + "\n// changed");
   assert.deepEqual(unprovenTests(dir, [t("A")]), [{ title: "A", why: "its code, or a helper it imports, changed since it last passed" }]);
   fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code + "\n// changed", "A"), streak: 2 } }));
