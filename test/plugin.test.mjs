@@ -13,6 +13,7 @@ import { appRoot, describeProject, describeRun, pathProblem, provenTests, readAp
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false, "qh_nopc": true }; // qh_nopc: no computer connected // key → plan active; anything else is revoked
 const pushed = [];
+let projectReads = 0; // GET /api/v1/projects/freight — the heavy project summary
 const planned = [];
 let planReview = false;
 const started = [];
@@ -52,7 +53,7 @@ const server = http.createServer((req, res) => {
     }
     if (u.pathname === "/api/v1/projects/keepgo") return out(200, { slug: "keepgo", tests: [{ ref: "TEST-00006", title: "Hazardous SDS", stage: "active", file: "a.spec.ts", verified: false, passes: 0 }] });
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
-    if (u.pathname === "/api/v1/projects/freight") return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"],
+    if (u.pathname === "/api/v1/projects/freight" && ++projectReads) return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"],
       environments: [{ name: "Local", url: "http://localhost:3000", kind: "local" }],
       modules: [{ name: "Quotes", path: "/quotes", parent: null, tests: 1 }, { name: "Quote details", path: "/quotes/1", parent: "/quotes", tests: 0 }, { name: "Log in", path: "/login", parent: null, tests: 1 }],
       sets: [{ name: "Release check", description: "Before every release", tests: ["TEST-00004"] }],
@@ -166,8 +167,12 @@ test("push sends the checkout's branch, says it is waiting, and qahub_learn send
   try {
     const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base }, dir, fetch, { pollMs: 10, waitMs: 3_000 });
     assert.equal(gitBranch(dir), "feature-x");
+    const reads = projectReads;
     const sent = await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
     assert.equal(pushed.at(-1).branch, "feature-x");
+    // QA Hub refuses a new test in a module it lacks (strictModules): no whole-project read before every push.
+    assert.equal(pushed.at(-1).strictModules, true);
+    assert.equal(projectReads, reads, "a push reads no project summary");
     assert.match(sent, /Waiting for feature-x: 2 new tests, 1 updated — QA Hub switches each place to them when that place's run shows the feature has arrived\./);
     // No place runs them yet: Claude isn't told to run them (they'd run the live versions, or not at all).
     assert.doesNotMatch(sent, /qahub_run|Run (them|the rest) now/);
@@ -404,13 +409,13 @@ test("qahub_project: the module tree, sets, tests, folders and helpers — what 
   assert.match(said, /Quotes:\n  TEST-00004 “Save a quote” \(tests\/quotes\.spec\.ts\) @smoke — A rep saves a quote\./);
 });
 
-test("push: a new test's module must exist or be declared — refused before sending, with what to do; a kept test is fine", async () => {
+test("push: QA Hub judges a new test's module (strictModules) — sent without reading the project first; declared modules go with it", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
-  const before = pushed.length;
-  await assert.rejects(t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Print a quote", module: "Printing", steps: ["Print"] }] }),
-    /Module “Printing” isn't in QA Hub[\s\S]*Quotes, Quote details, Log in[\s\S]*modules: \[\{ name: "Printing", path: "\/…", parent: "\/…" \}\]/);
-  assert.equal(pushed.length, before, "nothing was sent");
+  const reads = projectReads;
+  await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Print a quote", module: "Printing", steps: ["Print"] }] });
+  assert.equal(pushed.at(-1).strictModules, true, "QA Hub refuses it if Printing doesn't exist (apps/web push-check.test.ts)");
+  assert.equal(projectReads, reads);
   // Declared (with its parent), matched ignoring case, by address, or an existing test: all go through.
   await t.qahub_push({ files: ["tests/quotes.spec.ts"], modules: [{ name: "Printing", path: "/quotes/print", parent: "/quotes" }],
     tests: [{ file: "tests/quotes.spec.ts", title: "Print a quote", module: "Printing", steps: ["Print"], sets: ["Release check"] },

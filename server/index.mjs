@@ -477,16 +477,6 @@ export function describeDesign(d) {
   return lines.join("\n");
 }
 
-/** Which QA Hub module a pushed test lands in — the server's own rules, checked before sending. */
-function moduleFor(s, modules, t) {
-  const exact = s.modules.find((m) => m.name === t.module) ?? s.modules.find((m) => m.name.toLowerCase() === t.module.toLowerCase()) ?? s.modules.find((m) => m.path === t.module);
-  if (exact) return exact.name;
-  if (modules.some((m) => m.name.toLowerCase() === t.module.toLowerCase())) return t.module;
-  if (s.tests.some((x) => x.file === t.file && x.title === t.title) || t.replaces) return "(kept)";
-  if (s.tests.some((x) => !x.file && x.module === t.module && x.title.toLowerCase() === t.title.toLowerCase())) return t.module; // its plan's module
-  return null;
-}
-
 // When this session started (this process): knowledge saved after it is news to the Claude that read it at the start.
 const SESSION_START = new Date(Date.now() - process.uptime() * 1000);
 
@@ -851,14 +841,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.whoami();
       const p = projectOf(project);
       const tests = given.map((t) => (typeof t?.file === "string" ? { ...t, file: t.file.replaceAll("\\", "/") } : t)); // a Windows path
-      // Every new test lands in a real module: refused here, before anything is sent, with what to do.
-      if (tests.length) {
-        const s = await qa.call("GET", `/api/v1/projects/${p}`);
-        const lost = [...new Set(tests.filter((t) => !moduleFor(s, modules, t)).map((t) => t.module))];
-        if (lost.length) {
-          throw new QaHubError(`${lost.map((m) => `Module “${m}”`).join(", ")} isn't in QA Hub, so ${lost.length === 1 ? "its tests" : "those tests"} would land in Inbox. QA Hub's modules: ${s.modules.map((m) => m.name).join(", ") || "none yet"}. Use one of those (the one for the page the test covers), or — if it's a part of the app QA Hub doesn't have yet — add it in the same push: modules: [{ name: "${lost[0]}", path: "/…", parent: "/…" }] (its URL path; parent only for a sub-page). Nothing was sent.`);
-        }
-      }
+      // Every new test lands in a real module: QA Hub refuses one whose module it lacks (strictModules), naming its modules.
       // Passed twice on this computer with this exact code (try_tests): QA Hub counts them verified — no run of its own.
       const proven = provenTests(root, tests);
       // The recorder chat saves only what was tried: each test passed in try_tests with its code exactly as sent — or is
@@ -876,7 +859,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const branch = gitBranch(root); // on a feature branch QA Hub keeps this push waiting until the feature reaches each place
       // Each file's base: QA Hub's sha of the copy the edit here started from — a shared helper a teammate changed since is refused.
       const base = bases(root);
-      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(expectChanged ? { expectChanged } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}), ...(branch ? { branch } : {}) };
+      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, strictModules: true, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(expectChanged ? { expectChanged } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}), ...(branch ? { branch } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
