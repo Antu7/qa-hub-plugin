@@ -14,6 +14,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KEYS = { "qh_good": true, "qh_expired": false, "qh_nopc": true }; // qh_nopc: no computer connected // key → plan active; anything else is revoked
 const pushed = [];
 let projectReads = 0; // GET /api/v1/projects/freight — the heavy project summary
+let moreTests = []; // tests one case adds to the project summary
 const planned = [];
 let planReview = false;
 const started = [];
@@ -60,7 +61,7 @@ const server = http.createServer((req, res) => {
       tags: ["smoke"], folders: ["tests/quotes"], helpers: ["tests/helpers/nav.ts"],
       tests: [{ ref: "TEST-00004", title: "Save a quote", module: "Quotes", tags: ["smoke"], file: "tests/quotes.spec.ts", description: "A rep saves a quote.", steps: ["Open Quotes", "Save it"], by: "written by Claude" },
         { ref: "TEST-00002", title: "Sign in", module: "Log in", tags: [], file: "tests/login.spec.ts", steps: ["Sign in"], by: "recorded by Maya", needs: ["TEST-00004"] },
-        { ref: "TEST-00012", title: "Save a quote with a coupon", module: "Quotes", tags: [], file: "tests/coupons.spec.ts", steps: ["Open Quotes"], by: "written by Claude (Ana)", waitingFor: "feature-x" }] });
+        { ref: "TEST-00012", title: "Save a quote with a coupon", module: "Quotes", tags: [], file: "tests/coupons.spec.ts", steps: ["Open Quotes"], by: "written by Claude (Ana)", waitingFor: "feature-x" }, ...moreTests] });
     if (u.pathname === "/api/v1/projects/freight/design") return out(200, u.searchParams.get("module") === "Wishlist"
       ? { project: "freight", module: { name: "Wishlist", path: "/wishlist" }, designed: false, behaviours: [], note: "Wishlist isn't designed yet — propose its behaviours (what a user can do there) with qahub_plan, then plan their test cases.",
           guide: { create: { consider: ["the happy path → reopen → every value is shown"], gate: "reads a typed value back after reloading or reopening the record" } } }
@@ -513,7 +514,8 @@ test("qahub_plan: test cases before code; says whether a person reviews them; re
   planReview = true;
   said = await t.qahub_plan(plan);
   assert.match(said, /waiting for a person to approve in QA Hub[\s\S]*\/p\/freight\/tests/);
-  assert.match(said, /qahub_wait_review \{ tests: \["TEST-00010"\] \}/); // it waits for the decision, then carries on
+  assert.match(said, /never sit waiting[\s\S]*next session in this project writes them/); // waiting for a person never holds the session (2026-11-01)
+  assert.match(said, /Only if the user says they'll decide right now: qahub_wait_review \{ tests: \["TEST-00010"\] \}/);
   planReview = false;
 });
 
@@ -733,6 +735,16 @@ test("a test that uses what another makes says so (needs) — pushed, and shown 
   assert.deepEqual(pushed.at(-1).tests[0].needs, ["Save a quote"]);
 });
 
+test("approved plans nobody wrote yet come up at session start — the next session writes them (2026-11-01)", async () => {
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  moreTests = [{ ref: "TEST-00020", title: "Delete a quote", module: "Quotes", tags: [], file: null, steps: ["Delete it"], by: "planned by Claude (Ana)", stage: "approved" }];
+  try {
+    const { out } = await hook("hooks/session-start.mjs", { cwd: app }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
+    const said = JSON.parse(out).hookSpecificOutput.additionalContext;
+    assert.match(said, /APPROVED PLANS WAITING FOR CODE: a person approved a test plan in QA Hub that has no code yet: TEST-00020 “Delete a quote” \(Quotes, planned by Claude \(Ana\)\)\. Write them in this session/);
+  } finally { moreTests = []; }
+});
+
 test("Ask Claude to fix it: Claude brings it up at session start, asks first, sees the screenshot, and answers in plain words", async () => {
   fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
   const { out } = await hook("hooks/session-start.mjs", { cwd: app }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
@@ -878,6 +890,14 @@ test("the checklist has one home: the write-tests skill — the hook hands over 
   assert.match(skill, /`qahub_helpers \{ query \}` before writing ANY helper[^\n]*never write a second[^\n]*`qahub\/shared\/` \(update its importers in the same push\)/);
 });
 
+test("the skill: expected results come from what was asked, never the code just written; plans in review never hold the session", () => {
+  const skill = fs.readFileSync(path.join(HERE, "../skills/write-tests/SKILL.md"), "utf8");
+  const step = (n) => skill.split("\n").find((l) => l.startsWith(`${n}. `));
+  assert.match(step(4) + skill.split(step(4))[1].split("\n5. ")[0], /expected results? come from what the person asked for[^\n]*ticket[^\n]*never from the code you just wrote/i);
+  assert.match(step(5), /push and finish everything else[^\n]*end your turn saying which plans wait for review[^\n]*never sit waiting[^\n]*next session writes them/i);
+  assert.doesNotMatch(skill, /\*\*stop\*\* for those tests|plans still in review get waited for/);
+});
+
 test("after building: app code changed and nothing pushed — Claude is sent back once to write tests (or say why not)", async () => {
   const { buildCheck } = await import("../hooks/build-check.mjs");
   fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
@@ -891,7 +911,7 @@ test("after building: app code changed and nothing pushed — Claude is sent bac
   assert.equal(out.decision, "block");
   assert.match(out.reason, /src\/quotes\/QuoteForm\.tsx[\s\S]*qahub:write-tests[\s\S]*one line/);
   assert.doesNotMatch(out.reason, /README/);
-  assert.equal(buildCheck(input, edit("src/a.ts"), seen), null, "once per session");
+  assert.equal(buildCheck(input, edit("src/quotes/QuoteForm.tsx"), seen), null, "not again for the same changes");
 
   const fresh = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-seen-")), "s");
   assert.equal(buildCheck(input, [edit("src/a.ts"), push].join("\n"), fresh()), null, "tests were pushed after the change");
@@ -899,6 +919,29 @@ test("after building: app code changed and nothing pushed — Claude is sent bac
   assert.equal(buildCheck({ ...input, stop_hook_active: true }, edit("src/a.ts"), fresh()), null, "never loops");
   const other = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-unlinked-"));
   assert.equal(buildCheck({ ...input, cwd: other }, line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(other, "src/a.ts") } }] } }), fresh()), null, "only in a folder linked to QA Hub");
+});
+
+test("build-check asks once per push: feature B after feature A's push is asked again; a decline isn't nagged for the same files", async () => {
+  const { buildCheck } = await import("../hooks/build-check.mjs");
+  fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+  const line = (o) => JSON.stringify(o);
+  const edit = (file) => line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(app, file) } }] } });
+  const push = line({ type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__plugin_qahub_qahub__qahub_push", input: {} }] } });
+  const seen = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-seen-")), "s");
+  const input = { cwd: app, session_id: "s1" };
+  let t = edit("src/a/A.tsx");
+  assert.equal(buildCheck(input, t, seen)?.decision, "block", "feature A");
+  assert.equal(buildCheck(input, t, seen), null, "declined or answered: not again for the same files");
+  t = [t, push].join("\n");
+  assert.equal(buildCheck(input, t, seen), null, "pushed: nothing left");
+  t = [t, edit("src/b/B.tsx")].join("\n");
+  assert.match(buildCheck(input, t, seen)?.reason ?? "", /src\/b\/B\.tsx/, "feature B after the push: asked again");
+  assert.equal(buildCheck(input, t, seen), null);
+  t = [t, push, edit("src/a/A.tsx")].join("\n");
+  assert.equal(buildCheck(input, t, seen)?.decision, "block", "the same file again after another push is a new change");
+  t = [t, edit("src/c/C.tsx")].join("\n");
+  assert.match(buildCheck(input, t, seen)?.reason ?? "", /src\/a\/A\.tsx, src\/c\/C\.tsx/, "a new file before the push: asked about all of them");
+  assert.equal(buildCheck({ ...input, stop_hook_active: true }, [t, edit("src/d.ts")].join("\n"), seen), null, "never loops");
 });
 
 test("build-check on a feature branch asks for new tests, the affected tests' updates, knowledge and one push — and says nothing of a branch elsewhere", async () => {
@@ -913,7 +956,7 @@ test("build-check on a feature branch asks for new tests, the affected tests' up
     // Before the push nothing of the branch can run here: proven after it, only where this branch runs.
     assert.doesNotMatch(out.reason, /twice locally/);
     assert.match(out.reason, /qahub_push — QA Hub keeps it waiting[^.]*; prove [^.]*only on a place that runs this branch/);
-    assert.equal(buildCheck({ cwd: dir }, edit(dir), (() => { const s = fresh(); fs.writeFileSync(s, ""); return s; })()), null, "still once per session");
+    assert.equal(buildCheck({ cwd: dir }, edit(dir), (() => { const s = fresh(); fs.writeFileSync(s, JSON.stringify({ pushes: 0, files: ["src/a.ts"] })); return s; })()), null, "still not twice for the same changes");
     assert.equal(buildCheck({ cwd: dir, stop_hook_active: true }, edit(dir), fresh()), null, "still never loops");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   assert.doesNotMatch(buildCheck({ cwd: app }, edit(app), fresh()).reason, /branch|affected|qahub_learn/, "no branch, no branch part");
@@ -1047,27 +1090,55 @@ test("a try of a test that hasn't passed yet says it stays out of Results", () =
 });
 
 test("keep going: Claude goes back to work until the tests it builds are done", async () => {
-  const { leftOf, keepGoing, MAX, MAX_WAIT } = await import("../hooks/keep-going.mjs");
+  const { leftOf, keepGoing, MAX } = await import("../hooks/keep-going.mjs");
   const tests = new Map([
     ["TEST-00003", { ref: "TEST-00003", title: "Create an SDS", stage: "active", file: "a.spec.ts", verified: false, passes: 0 }],
     ["TEST-00004", { ref: "TEST-00004", title: "Empty form", stage: "active", file: "b.spec.ts" }],
     ["TEST-00006", { ref: "TEST-00006", title: "Hazardous SDS", stage: "approved" }],
     ["TEST-00007", { ref: "TEST-00007", title: "Non-hazardous SDS", stage: "planned" }],
   ]);
-  const left = leftOf(tests, ["TEST-00003", "TEST-00004", "TEST-00006", "TEST-00007", "TEST-00099"]);
+  const left = leftOf(tests, ["TEST-00003", "TEST-00004", "TEST-00006", "TEST-00007", "TEST-00099"], new Set(["TEST-00003"]));
   assert.deepEqual([left.fix, left.write, left.waiting].map((x) => x.map((t) => t.ref)), [["TEST-00003"], ["TEST-00006"], ["TEST-00007"]]);
-  const out = keepGoing(left, { n: 0, waits: 0 });
+  const out = keepGoing(left, { n: 0 });
   assert.equal(out.decision, "block");
   assert.match(out.reason, /TEST-00003 “Create an SDS” \(0 of 2 passes\)/);
   assert.match(out.reason, /write, push and run them: TEST-00006/);
-  assert.match(out.reason, /qahub_wait_review \{ tests: \["TEST-00007"\] \}/);
-  // It stops: when it needs the person, after MAX rounds, after an hour of only waiting, and when all are done.
-  assert.equal(keepGoing(left, { n: 0, waits: 0 }, "Needs you: add a test account for the admin role"), null);
-  assert.equal(keepGoing(left, { n: MAX, waits: 0 }), null);
-  const onlyWaiting = { waiting: left.waiting, write: [], fix: [] };
-  assert.equal(keepGoing(onlyWaiting, { n: 1, waits: MAX_WAIT }), null);
-  assert.equal(keepGoing(onlyWaiting, { n: 1, waits: 0 })?.decision, "block");
-  assert.equal(keepGoing(leftOf(tests, ["TEST-00004"]), { n: 0, waits: 0 }), null);
+  assert.match(out.reason, /TEST-00007[^\n]*don't wait for (it|them)[^\n]*which plans wait for review/);
+  assert.doesNotMatch(out.reason, /qahub_wait_review/);
+  // It stops: when it needs the person, after MAX rounds, and when all are done.
+  assert.equal(keepGoing(left, { n: 0 }, "Needs you: add a test account for the admin role"), null);
+  assert.equal(keepGoing(left, { n: MAX }), null);
+  assert.equal(keepGoing(leftOf(tests, ["TEST-00004"]), { n: 0 }), null);
+});
+
+test("keep going never holds the session for a person: plans in review and runs not yet passed twice let Claude stop", async () => {
+  const { leftOf, keepGoing, failedIn } = await import("../hooks/keep-going.mjs");
+  const tests = new Map([
+    ["TEST-00003", { ref: "TEST-00003", title: "Create an SDS", stage: "active", file: "a.spec.ts", verified: false, passes: 1 }],
+    ["TEST-00006", { ref: "TEST-00006", title: "Hazardous SDS", stage: "approved" }],
+    ["TEST-00007", { ref: "TEST-00007", title: "Non-hazardous SDS", stage: "planned" }],
+  ]);
+  assert.equal(keepGoing(leftOf(tests, ["TEST-00007"]), { n: 0 }), null, "only a plan waiting for review");
+  assert.equal(keepGoing(leftOf(tests, ["TEST-00003", "TEST-00007"]), { n: 0 }), null, "pushed, not failed, not passed twice yet — and a review");
+  assert.equal(keepGoing(leftOf(tests, ["TEST-00006", "TEST-00007"]), { n: 0 })?.decision, "block", "an approved plan with no code: write it");
+  assert.equal(keepGoing(leftOf(tests, ["TEST-00003"], new Set(["TEST-00003"])), { n: 0 })?.decision, "block", "it failed: fix it");
+  // Pushed and never run in this session: it isn't waiting for anyone — run it (ran: the refs qahub_run named).
+  const never = keepGoing(leftOf(tests, ["TEST-00003"], new Set(), new Set()), { n: 0 });
+  assert.equal(never?.decision, "block", "pushed, never run: run it");
+  assert.match(never.reason, /never run — run them twice[\s\S]*TEST-00003/);
+  assert.equal(keepGoing(leftOf(tests, ["TEST-00003"], new Set(), new Set(["TEST-00003"])), { n: 0 }), null, "run, not failed: its runs just aren't done");
+
+  // Failed: the last run of it in this session said so; a later run of it clears that until it fails again.
+  const use = (name, input = {}) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name, input }] } });
+  const said = (text, asString) => JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: asString ? text : [{ type: "text", text }] }] } });
+  const failed = said("Run ID #4 finished: 0 passed, 1 failed — http://q/r/4\n- TEST-00003 “Create an SDS” (a.spec.ts) failed at “Save” — the app broke.\n  Timeout");
+  const run = use("mcp__plugin_qahub_qahub__qahub_run", { tests: ["TEST-00003"], repeat: 2 });
+  assert.deepEqual([...failedIn([run, failed].join("\n"))], ["TEST-00003"]);
+  assert.deepEqual([...failedIn([run, said("- TEST-00003 “Create an SDS” failed.", true)].join("\n"))], ["TEST-00003"], "a plain-string result too");
+  assert.deepEqual([...failedIn([run, failed, run, said("Run ID #5 finished: 1 passed, 0 failed — all passed")].join("\n"))], [], "ran again and passed");
+  assert.deepEqual([...failedIn([run, failed, use("mcp__plugin_qahub_qahub__qahub_push")].join("\n"))], ["TEST-00003"], "a push alone doesn't clear it: run it");
+  const { ranIn } = await import("../hooks/keep-going.mjs");
+  assert.deepEqual([...ranIn([use("mcp__plugin_qahub_qahub__qahub_push"), run].join("\n"))], ["TEST-00003"]);
 });
 
 test("knowledge: the index first, a module in one call, and a save never lands over a newer version", async () => {
@@ -1229,11 +1300,8 @@ test("keep going sends back only on progress: a qahub tool called since the last
   assert.equal(keepGoing(left, { n: 0, waits: 0 }, "", false, { calls: 0 })?.decision, "block", "the first send-back needs no progress yet");
   assert.equal(keepGoing(left, { n: 1, waits: 0, calls: 3 }, "", false, { calls: 3 }), null, "no qahub tool since the last send-back: not again");
   assert.equal(keepGoing(left, { n: 1, waits: 0, calls: 3 }, "", false, { calls: 4 })?.decision, "block", "it did something: on");
-  // No computer connected: running and fixing can't happen — only the review wait is left; with nothing waiting, it stops.
-  const off = keepGoing(left, { n: 0, waits: 0 }, "", false, { computer: false });
-  assert.doesNotMatch(off.reason, /TEST-00006/);
-  assert.match(off.reason, /qahub_wait_review/);
-  assert.equal(keepGoing({ ...left, waiting: [] }, { n: 0, waits: 0 }, "", false, { computer: false }), null);
+  // No computer connected: running and fixing can't happen, and a review is never waited for — it stops.
+  assert.equal(keepGoing(left, { n: 0 }, "", false, { computer: false }), null);
 
   // The hook: whoami says whether a computer is connected; the rounds file keeps the calls counted at each send-back.
   const { keepGoingCheck } = await import("../hooks/stop.mjs");
@@ -1243,7 +1311,9 @@ test("keep going sends back only on progress: a qahub tool called since the last
   building(root, ["TEST-00006"]);
   const env = { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base };
   const rounds = path.join(root, "rounds.json");
-  const t1 = use("mcp__plugin_qahub_qahub__qahub_run");
+  const ranIt = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__plugin_qahub_qahub__qahub_run", input: { tests: ["TEST-00006"], repeat: 2 } }] } });
+  assert.equal(await keepGoingCheck({ cwd: root }, ranIt, rounds, env), null, "pushed, run, not failed: its runs aren't Claude's to wait for");
+  const t1 = [use("mcp__plugin_qahub_qahub__qahub_run"), JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: [{ type: "text", text: "- TEST-00006 “Hazardous SDS” (a.spec.ts) failed at “Save”." }] }] } })].join("\n");
   assert.equal((await keepGoingCheck({ cwd: root }, t1, rounds, env))?.decision, "block");
   assert.equal(JSON.parse(fs.readFileSync(rounds, "utf8")).calls, 1);
   assert.equal(await keepGoingCheck({ cwd: root, stop_hook_active: true }, t1, rounds, env), null, "nothing called since: not sent back again");

@@ -566,7 +566,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const waiting = res.planned.filter((x) => x.stage === "planned").length;
       const ready = res.planned.length - waiting;
       const lines = [];
-      if (waiting) lines.push(`${waiting} test case${waiting === 1 ? "" : "s"} waiting for a person to approve in QA Hub: ${qa.origin()}/p/${p}/tests — they decide what “correct” is. Write the code for any approved ones first, then tell the user they're waiting in QA Hub and call qahub_wait_review { tests: [${res.planned.filter((x) => x.stage === "planned").map((x) => `"${x.ref}"`).join(", ")}] } — you carry on by yourself the moment they decide. Code for an unapproved plan is refused.`);
+      if (waiting) lines.push(`${waiting} test case${waiting === 1 ? "" : "s"} waiting for a person to approve in QA Hub: ${qa.origin()}/p/${p}/tests — they decide what “correct” is. Write the code for any approved ones, push and finish everything else, then end your turn telling the user which wait (with this link) — never sit waiting: once they're approved, the next session in this project writes them. Only if the user says they'll decide right now: qahub_wait_review { tests: [${res.planned.filter((x) => x.stage === "planned").map((x) => `"${x.ref}"`).join(", ")}] }. Code for an unapproved plan is refused.`);
       if (ready) lines.push(`${ready} test case${ready === 1 ? "" : "s"} approved — write ${ready === 1 ? "its" : "their"} code now: each test("…") named exactly as planned, its test.step names equal to the planned steps.`);
       for (const x of res.planned) lines.push(`- ${x.ref} “${x.title}” in ${x.module} (${x.stage})`);
       // Already a test (it has code): its design was updated, not a new test — change ITS code and push it.
@@ -1087,6 +1087,6 @@ export function reviewWords(decided, timedOut) {
   if (of("approved").length) lines.push(`Approved — write their code now, push and run them: ${of("approved").map((d) => `${d.ref} “${d.title}”`).join(", ")}.`);
   for (const d of of("changes")) lines.push(`${d.ref} “${d.title}”: changes asked — ${d.note || "see qahub_gaps"}. Plan it again with the change (qahub_plan), then wait again.`);
   if (of("rejected").length) lines.push(`Rejected (removed): ${of("rejected").map((d) => d.ref).join(", ")} — don't write them.`);
-  if (timedOut) lines.push(`Still waiting for: ${of("waiting").map((d) => d.ref).join(", ")}. Tell the user; when they decide, you'll hear about it with their next message (or call qahub_wait_review again).`);
+  if (timedOut) lines.push(`Still waiting for: ${of("waiting").map((d) => d.ref).join(", ")}. Don't wait longer: finish the rest and tell the user which wait — once they're approved, the next session in this project writes them.`);
   return lines.join("\n");
 }

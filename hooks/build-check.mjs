@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // "Claude writes tests while it builds": when Claude is about to stop after changing the app's code in a folder
-// linked to QA Hub, and no tests were pushed since, it is sent back ONCE in the session — to write tests for what
-// it built, or to say in one line why the change needs none. Never loops (stop_hook_active), never blocks on errors.
+// linked to QA Hub, and no tests were pushed since, it is sent back — to write tests for what it built, or to say in
+// one line why the change needs none. Once per push: asked again only for app files it wasn't asked about since the
+// last qahub_push (feature B after feature A's push is asked; a "needs no tests" isn't nagged for the same files).
+// Never loops (stop_hook_active), never blocks on errors.
 import fs from "node:fs";
 import path from "node:path";
 import { appRoot } from "../server/index.mjs";
@@ -32,14 +34,18 @@ export function changedSincePush(transcript, root) {
   return [...changed];
 }
 
-/** The Stop hook's answer, or null. `seen` is the once-per-session marker file. */
+/** The Stop hook's answer, or null. `seen` keeps what it last asked about: { pushes, files }. */
 export function buildCheck(input, transcript, seen) {
   if (input?.stop_hook_active) return null;
   const root = appRoot(input?.cwd || process.cwd());
   if (!fs.existsSync(path.join(root, "qahub.json"))) return null;
   const files = changedSincePush(transcript, root);
   if (!files.length) return null;
-  try { fs.writeFileSync(seen, "", { flag: "wx" }); } catch { return null; } // already asked this session
+  const pushes = (transcript.match(/"name":"[^"]*qahub_push"/g) ?? []).length; // a push starts a new set of changes
+  let asked = {};
+  try { asked = JSON.parse(fs.readFileSync(seen, "utf8")); } catch { /* not asked yet */ }
+  if (asked.pushes === pushes && files.every((f) => asked.files?.includes(f))) return null; // already asked about these
+  try { fs.writeFileSync(seen, JSON.stringify({ pushes, files })); } catch { return null; }
   const list = files.slice(0, 6).join(", ") + (files.length > 6 ? `, and ${files.length - 6} more` : "");
   const branch = gitBranch(root);
   // main/master: usually what places run, so live. A feature branch's tests can't run before the push (try_tests is the

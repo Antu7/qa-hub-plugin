@@ -3,14 +3,14 @@
 // pushed (build-check.mjs), and tests still looking for words taken out of the app (ui-change.mjs staleCheck). As
 // two separate hooks they could both block the same stop, so Claude got sent back twice with two messages; here
 // they run together and answer once, with both reasons. Each keeps its own guards (stop_hook_active, once per
-// session; keep-going only in rounds it counted); errors never block.
+// push; keep-going only in rounds it counted); errors never block.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isMain } from "../server/qahub.mjs";
 import { buildCheck } from "./build-check.mjs";
 import { staleCheck } from "./ui-change.mjs";
-import { keepGoing, leftOf, qahubCalls } from "./keep-going.mjs";
+import { failedIn, keepGoing, leftOf, qahubCalls, ranIn } from "./keep-going.mjs";
 import { appRoot, building, reviewState } from "../server/index.mjs";
 import { client } from "../server/qahub.mjs";
 
@@ -55,12 +55,12 @@ export async function keepGoingCheck(input, transcript, roundsFile, env = proces
   if (!/^[a-z0-9-]{1,60}$/.test(project ?? "")) return null;
   const qa = client({ key: env.CLAUDE_PLUGIN_OPTION_API_KEY, server: env.CLAUDE_PLUGIN_OPTION_SERVER, timeoutMs: 8_000 });
   const [state, me] = await Promise.all([reviewState(qa, project), qa.whoami()]);
-  const left = leftOf(state.tests, refs);
-  let rounds = { n: 0, waits: 0 };
+  const left = leftOf(state.tests, refs, failedIn(transcript), ranIn(transcript));
+  let rounds = { n: 0 };
   try { rounds = JSON.parse(fs.readFileSync(roundsFile, "utf8")); } catch { /* first stop */ }
   const calls = qahubCalls(transcript);
   const out = keepGoing(left, rounds, input.last_assistant_message ?? lastText(transcript), !!input.stop_hook_active, { calls, computer: !!me?.computer });
-  if (out) fs.writeFileSync(roundsFile, JSON.stringify({ n: rounds.n + 1, waits: rounds.waits + (me?.computer && left.write.length + left.fix.length ? 0 : 1), calls }));
+  if (out) fs.writeFileSync(roundsFile, JSON.stringify({ n: rounds.n + 1, calls }));
   return out;
 }
 
