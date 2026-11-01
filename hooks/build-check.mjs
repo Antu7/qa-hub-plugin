@@ -6,7 +6,7 @@
 // Never loops (stop_hook_active), never blocks on errors.
 import fs from "node:fs";
 import path from "node:path";
-import { appRoot } from "../server/index.mjs";
+import { appRoot, projectAt } from "../server/index.mjs";
 import { gitBranch } from "../server/qahub.mjs";
 import { isTestFile } from "./test-checklist.mjs";
 
@@ -38,7 +38,7 @@ export function changedSincePush(transcript, root) {
 export function buildCheck(input, transcript, seen) {
   if (input?.stop_hook_active) return null;
   const root = appRoot(input?.cwd || process.cwd());
-  if (!fs.existsSync(path.join(root, "qahub.json"))) return null;
+  if (!projectAt(root)) return null;
   const files = changedSincePush(transcript, root);
   if (!files.length) return null;
   const pushes = (transcript.match(/"name":"[^"]*qahub_push"/g) ?? []).length; // a push starts a new set of changes

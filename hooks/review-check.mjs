@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { appRoot, reviewState } from "../server/index.mjs";
+import { appRoot, projectAt, reviewState } from "../server/index.mjs";
 import { client } from "../server/qahub.mjs";
 
 const input = await new Promise((ok) => {
@@ -14,7 +14,7 @@ const input = await new Promise((ok) => {
 });
 
 try {
-  const project = JSON.parse(fs.readFileSync(path.join(appRoot(input.cwd || process.cwd()), "qahub.json"), "utf8")).project;
+  const project = projectAt(appRoot(input.cwd || process.cwd()));
   if (!/^[a-z0-9-]{1,60}$/.test(project ?? "")) process.exit(0);
   const qa = client({ key: process.env.CLAUDE_PLUGIN_OPTION_API_KEY, server: process.env.CLAUDE_PLUGIN_OPTION_SERVER, timeoutMs: 3_000 });
   const st = await reviewState(qa, project);

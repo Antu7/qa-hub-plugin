@@ -53,9 +53,29 @@ export function appRoot(start = process.cwd(), home = os.homedir()) {
     if (path.dirname(d) === d) return from;
   }
 }
-function linkedProject(root) {
+export function linkedProject(root) {
   try { const p = JSON.parse(fs.readFileSync(path.join(root, LINK_FILE), "utf8")).project; return SLUG.test(p) ? p : null; } catch { return null; }
 }
+/**
+ * The project QA Hub said this folder's GitHub repo is (the session start asks it, ?repo=, when there's no qahub.json): kept in
+ * <root>/.qahub/ (git-ignored), never written to the repo — qahub_link makes it permanent. 12 hours: an old answer fails
+ * closed until the next session asks again. `null` forgets it.
+ */
+const FOUND = (root) => path.join(root, ".qahub", "project.json");
+export function foundProject(root) {
+  try { const f = JSON.parse(fs.readFileSync(FOUND(root), "utf8")); return SLUG.test(f.project) && Date.now() - Date.parse(f.at) < 12 * 3600_000 ? f.project : null; } catch { return null; }
+}
+export function rememberProject(root, project) {
+  const f = FOUND(root);
+  try {
+    if (!project) return fs.rmSync(f, { force: true });
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    try { fs.writeFileSync(path.join(path.dirname(f), ".gitignore"), "*\n", { flag: "wx" }); } catch { /* there already */ } // never in the app's commits
+    fs.writeFileSync(f, JSON.stringify({ project, at: new Date().toISOString() }));
+  } catch { /* a folder we can't write: the next session asks again */ }
+}
+/** The project this folder sends tests to: its qahub.json, else what QA Hub said its GitHub repo is. */
+export const projectAt = (root) => linkedProject(root) ?? foundProject(root);
 
 /**
  * A file to send, read safely: inside the app's folder (symlinks resolved), never secrets, size-capped.
@@ -500,7 +520,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
   // ponytail: a second, cheap call (an older QA Hub ignores only=updated and answers with the index — no notice then).
   const newsOf = async (p) => notice(p, (await qa.call("GET", `/api/v1/projects/${p}/knowledge?since=${sinceOf(p)}&only=updated`).catch(() => null))?.updated);
   const projectOf = (arg) => {
-    const p = arg ?? linkedProject(root);
+    const p = arg ?? projectAt(root);
     if (!p) throw new QaHubError("This app folder isn't linked to a QA Hub project yet. Ask which project it is (qahub_status lists them), then call qahub_link.");
     if (!SLUG.test(p)) throw new QaHubError(`“${p}” isn't a QA Hub project name (lowercase letters, digits and dashes).`);
     return p;
@@ -534,7 +554,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     async qahub_status() {
       const me = await qa.whoami({ fresh: true });
       const { projects } = await qa.call("GET", "/api/v1/projects");
-      const linked = linkedProject(root);
+      const linked = projectAt(root);
       const summary = linked && projects.some((x) => x.slug === linked) ? await qa.call("GET", `/api/v1/projects/${linked}`).catch(() => null) : null;
       return [
         `Connected to QA Hub (${qa.origin()}) as ${me.user?.name ?? "?"} <${me.user?.email ?? "?"}> — ${me.company?.name ?? "your company"}, role ${me.role}.`,
@@ -542,7 +562,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         me.computer ? `Your computer: ${me.computer.name} (qahub ${me.computer.version}) — connected, so qahub_run can run tests.`
           : `Your computer isn't connected, so tests can't run yet: in QA Hub open Computers and run the connect command it shows (in a terminal on the computer where the app runs).`,
         `Projects: ${projects.map((p) => `${p.slug} (${p.name})`).join(", ") || "none yet — create one in QA Hub"}.`,
-        linked ? `This folder is linked to: ${linked}.` : "This folder isn't linked to a project yet (qahub_link).",
+        linked ? `This folder ${linkedProject(root) ? "is linked to" : "is GitHub's repo of"}: ${linked}.` : "This folder isn't linked to a project yet (qahub_link).",
         ...(summary ? [`Environments: ${summary.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}. Tests in QA Hub: ${summary.tests.filter((t) => !t.waitingFor).length}.`] : []),
       ].join("\n");
     },
@@ -740,7 +760,12 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.whoami();
       const p = projectOf(String(project ?? "").trim().toLowerCase());
       const { projects } = await qa.call("GET", "/api/v1/projects");
-      if (!projects.some((x) => x.slug === p)) throw new QaHubError(`No project “${p}” in your company's QA Hub. Projects: ${projects.map((x) => x.slug).join(", ") || "none"}.`);
+      if (!projects.some((x) => x.slug === p)) {
+        // A project the person wasn't given is refused by name, never "no such project" (that makes people create a duplicate).
+        const locked = await qa.call("GET", `/api/v1/projects/${p}`).then(() => false, (e) => e.code === "forbidden");
+        if (locked) throw new QaHubError(`You don't have access to “${p}” — ask an admin (or its project manager) to add you in QA Hub, then link it again.`);
+        throw new QaHubError(`No project “${p}” in your company's QA Hub. Projects: ${projects.map((x) => x.slug).join(", ") || "none"}.`);
+      }
       // A checkout of another app linked here would read and teach the wrong project: its GitHub repo must be one of the
       // project's. Not a git checkout, or a project with no repo linked: nothing to compare.
       const mine = gitRepos(root);
@@ -976,7 +1001,7 @@ function notProven(root, proof, t, need = 2) {
 /** A repo's address (https://github.com/o/n.git, git@github.com:o/n, ssh://…) or "o/n" as "o/n", lower-case; a folder on disk: null. */
 const repoName = (url) => { const u = String(url ?? "").trim(); return /^(file:|[/.~\\])/.test(u) ? null : /([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(u)?.slice(1).join("/").toLowerCase() ?? null; };
 /** The repos this folder's git checkout points at (its remotes), as "owner/name"; none when it isn't a checkout. */
-function gitRepos(root) {
+export function gitRepos(root) {
   try {
     const out = execFileSync("git", ["-C", root, "config", "--local", "--get-regexp", "^remote\\..*\\.url$"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
     return [...new Set(out.split("\n").map((l) => repoName(l.split(/\s+/)[1])).filter(Boolean))];

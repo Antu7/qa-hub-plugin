@@ -11,7 +11,7 @@ import { isMain } from "../server/qahub.mjs";
 import { buildCheck } from "./build-check.mjs";
 import { staleCheck } from "./ui-change.mjs";
 import { failedIn, keepGoing, leftOf, qahubCalls, ranIn } from "./keep-going.mjs";
-import { appRoot, building, reviewState } from "../server/index.mjs";
+import { appRoot, building, projectAt, reviewState } from "../server/index.mjs";
 import { client } from "../server/qahub.mjs";
 
 /**
@@ -51,7 +51,7 @@ export async function keepGoingCheck(input, transcript, roundsFile, env = proces
   const root = appRoot(input.cwd || process.cwd());
   const refs = building(root);
   if (!refs.length) return null;
-  const project = JSON.parse(fs.readFileSync(path.join(root, "qahub.json"), "utf8")).project;
+  const project = projectAt(root);
   if (!/^[a-z0-9-]{1,60}$/.test(project ?? "")) return null;
   const qa = client({ key: env.CLAUDE_PLUGIN_OPTION_API_KEY, server: env.CLAUDE_PLUGIN_OPTION_SERVER, timeoutMs: 8_000 });
   const [state, me] = await Promise.all([reviewState(qa, project), qa.whoami()]);

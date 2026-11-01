@@ -2,16 +2,15 @@
 // Before `git push`: if this app's latest QA Hub run has failing tests, Claude Code asks the person first
 // (the plan's "a gate warns if tests are failing"). Quiet when everything passed, when nothing is linked,
 // and when QA Hub can't be reached — a check that fails must never block someone's push. Never prints the key.
-import fs from "node:fs";
-import path from "node:path";
-import { appRoot } from "../server/index.mjs";
+import { appRoot, projectAt } from "../server/index.mjs";
 import { client, isMain } from "../server/qahub.mjs";
 
 export async function pushCheck(input, env = process.env) {
   const cmd = String(input?.tool_input?.command ?? "");
   if (!/(^|[\s;&|(])git\s+((-C|-c|--git-dir|--work-tree)\s+\S+\s+|-\S+\s+)*push\b/.test(cmd)) return null; // git -C dir push too
   let project;
-  try { project = JSON.parse(fs.readFileSync(path.join(appRoot(input.cwd || process.cwd()), "qahub.json"), "utf8")).project; } catch { return null; }
+  project = projectAt(appRoot(input.cwd || process.cwd()));
+  if (!project) return null;
   if (!/^[a-z0-9-]{1,60}$/.test(project ?? "")) return null;
   try {
     const qa = client({ key: env.CLAUDE_PLUGIN_OPTION_API_KEY, server: env.CLAUDE_PLUGIN_OPTION_SERVER, timeoutMs: 5_000 });

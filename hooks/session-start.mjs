@@ -3,9 +3,7 @@
 // What it finds becomes context for Claude — so a bad key is said once, plainly, before any work.
 // Never prints the key. Never blocks the session: each call to QA Hub gets 3 s, so QA Hub being slow or
 // down costs a few seconds at most. In a folder that isn't linked to QA Hub it says one short line.
-import fs from "node:fs";
-import path from "node:path";
-import { appRoot } from "../server/index.mjs";
+import { appRoot, gitRepos, linkedProject, rememberProject } from "../server/index.mjs";
 import { client, publishedVersion, updateNote } from "../server/qahub.mjs";
 
 // The session's folder comes on stdin (Claude Code's hook input); give up waiting after a moment.
@@ -14,9 +12,9 @@ const input = await new Promise((ok) => {
   process.stdin.on("data", (c) => (raw += c)); process.stdin.on("end", done); setTimeout(done, 500).unref();
 });
 
-let project = null;
-try { project = JSON.parse(fs.readFileSync(path.join(appRoot(input.cwd || process.cwd()), "qahub.json"), "utf8")).project; } catch { /* not linked */ }
-const linked = /^[a-z0-9-]{1,60}$/.test(project ?? "");
+const root = appRoot(input.cwd || process.cwd());
+let project = linkedProject(root);
+let linked = !!project;
 
 let text;
 if (Number(process.versions.node.split(".")[0]) < 18) {
@@ -29,16 +27,37 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
   const latest = publishedVersion(); // in parallel with the key check; at most 2 s
   // The project and its fix requests are asked for at the same time as the key check, not after it: in a row they
   // could add two 3-second waits to every session start when QA Hub is slow. Ignored if the key check fails.
-  const extra = linked ? Promise.all([qa.call("GET", `/api/v1/projects/${project}`).catch(() => null), qa.call("GET", `/api/v1/projects/${project}/fixes?shots=0`).catch(() => null)]) : null;
+  // A project the person wasn't given answers 403: kept, so it's said now — not at Claude's first tool call.
+  const read = (p) => Promise.all([qa.call("GET", `/api/v1/projects/${p}`).catch((e) => ({ failed: e })), qa.call("GET", `/api/v1/projects/${p}/fixes?shots=0`).catch(() => null)]);
+  let extra = linked ? read(project) : null;
+  // No qahub.json: QA Hub says which project this folder's GitHub repo is (origin and upstream — a fork's), across the whole
+  // company; asked with the key check. Never written to the repo: kept in .qahub/ for this session's tools and hooks.
+  const remotes = linked ? [] : gitRepos(root);
+  const lookup = remotes.length ? qa.call("GET", `/api/v1/projects?${remotes.map((r) => `repo=${encodeURIComponent(r)}`).join("&")}`).catch(() => null) : null;
   try {
     const me = await qa.whoami({ fresh: true });
     const who = `QA Hub plugin: connected as ${me.user?.name ?? "?"} (${me.company?.name ?? "?"}), plan active until ${me.company?.expiresAt?.slice(0, 10) ?? "?"}.`;
+    let found = "", unlinked = "This folder isn't linked to a QA Hub project. Use the qahub tools only when the user asks for tests, test automation or QA Hub (then qahub_status, and qahub_link this folder).";
+    if (lookup) {
+      const r = (await lookup)?.repo;
+      const name = (x) => `“${x.name}” (${x.slug})`;
+      if (r?.match) {
+        project = r.match.slug; linked = true; rememberProject(root, project); extra = read(project);
+        found = `This folder's GitHub repo is the QA Hub project ${name(r.match)} — used for this session (not written to the repo; qahub_link makes it permanent).`;
+      } else if (r) {
+        rememberProject(root, null);
+        if (r.ambiguous) unlinked = `This folder's GitHub repo belongs to several QA Hub projects: ${r.ambiguous.map(name).join(", ")}. Before any qahub tool, ask the user which app this folder is, then qahub_link it.`;
+        if (r.noAccess) unlinked = `This folder's GitHub repo is the QA Hub project ${name(r.noAccess)}, and you don't have access to it — ask an admin (or its project manager) to add you in QA Hub. Until then the qahub tools can't read or save its tests; tell the user once.`;
+      }
+    }
     if (!linked) {
-      text = `${who} This folder isn't linked to a QA Hub project. Use the qahub tools only when the user asks for tests, test automation or QA Hub (then qahub_status, and qahub_link this folder).`;
+      text = `${who} ${unlinked}`;
     } else {
       text = `${who} ${me.computer ? `Their computer (${me.computer.name}) is connected, so qahub_run can run tests.` : "Their computer isn't connected to QA Hub yet, so tests can be sent but not run."} When you build or change a feature, write Playwright tests for it, send them and run them with the qahub tools (see the qahub:write-tests skill).`;
       // The project's shape up front, so Claude knows where tests go before writing one.
       const [s, f] = await extra;
+      if (found) text += ` ${found}`;
+      if (s?.failed?.code === "forbidden") text += ` NO ACCESS: you don't have access to the QA Hub project “${project}” — ask an admin (or its project manager) to add you. Until then the qahub tools can't read or save its tests; tell the user once.`;
       if (s?.tests && s?.modules) text += ` This folder sends tests to ${project}: ${s.tests.filter((t) => !t.waitingFor).length} tests. Modules: ${s.modules.slice(0, 40).map((m) => `${m.name} (${m.path})`).join(", ") || "none yet"}${s.modules.length > 40 ? ", …" : ""}. Sets: ${s.sets?.map((x) => x.name).join(", ") || "none"}. Teammates and people recording add tests too — before writing one, read qahub_project and check qahub_find so nothing is written twice; read qahub_knowledge before the app\'s code, and qahub_learn what you read; qahub_pull before editing a shared test file.`;
       // Plans a person approved that nobody wrote yet (the session that planned them ended while they waited for review):
       // whichever developer's Claude or agent opens this project next writes them.

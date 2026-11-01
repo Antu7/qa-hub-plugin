@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { appRoot } from "../server/index.mjs";
+import { appRoot, projectAt } from "../server/index.mjs";
 import { isMain } from "../server/qahub.mjs";
 
 // The checklist lives once, at the end of the write-tests skill: this hands over that very section.
@@ -22,7 +22,7 @@ export function checklistFor(input, seen) {
   if (!isTestFile(file)) return null;
   // Only in an app linked to QA Hub: a Jest or Vitest file in any other project is none of QA Hub's business.
   const cwd = input?.cwd || process.cwd();
-  if (!fs.existsSync(path.join(appRoot(path.dirname(path.resolve(cwd, file))), "qahub.json"))) return null;
+  if (!projectAt(appRoot(path.dirname(path.resolve(cwd, file))))) return null;
   try { fs.writeFileSync(seen, "", { flag: "wx" }); } catch { return null; } // already shown this session
   return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: CHECKLIST } };
 }

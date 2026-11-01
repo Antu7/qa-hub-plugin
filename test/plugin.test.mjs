@@ -15,6 +15,7 @@ const KEYS = { "qh_good": true, "qh_expired": false, "qh_nopc": true }; // qh_no
 const pushed = [];
 let projectReads = 0; // GET /api/v1/projects/freight — the heavy project summary
 let moreTests = []; // tests one case adds to the project summary
+let repoAnswer = () => ({ none: true }); // what QA Hub says a folder's GitHub repo is (?repo=)
 const planned = [];
 let planReview = false;
 const started = [];
@@ -39,7 +40,11 @@ const server = http.createServer((req, res) => {
     const u = new URL(req.url, "http://x");
     if (u.pathname === "/api/v1/me") return out(200, { user: { name: "Ana", email: "ana@acme.test" }, company: { name: "Acme", plan: "trial", active: KEYS[key], expiresAt: "2026-12-01T00:00:00.000Z" }, role: "owner", computer: key === "qh_nopc" ? null : { name: "MacBook", version: "0.9.21" } });
     if (!KEYS[key] && req.method === "POST") return out(402, { error: { code: "plan_expired", message: "Your QA Hub plan has ended." } });
-    if (u.pathname === "/api/v1/projects") return out(200, { projects: [{ slug: "freight", name: "Freight portal" }] });
+    if (u.pathname === "/api/v1/projects") {
+      const repos = u.searchParams.getAll("repo");
+      return out(200, { projects: [{ slug: "freight", name: "Freight portal" }], ...(repos.length ? { repo: repoAnswer(repos) } : {}) });
+    }
+    if (u.pathname === "/api/v1/projects/locked" || u.pathname.startsWith("/api/v1/projects/locked/")) return out(403, { error: { code: "no_access", message: "You don't have access to this project — ask an admin (or its project manager) to add you." } });
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "GET") {
       // Topics others saved after `since`, by module (QA Hub 2026-10-22+); only=updated: that alone.
       const since = u.searchParams.get("since");
@@ -1414,4 +1419,48 @@ test("a fix for a test whose app didn't finish loading says to rerun it unchange
   assert.match(said, /\nYour app didn't finish loading when it failed: rerun it unchanged once \(qahub_run\) — if it happens again, the app is slow or down; don't change the test for it\.$/);
   assert.equal(readOf({ failKind: "bug", technical: "expect(locator).toHaveText failed" }), "QA Hub's read: the app broke.");
   assert.equal(readOf({}), "");
+});
+
+// Which project is this folder? (2026-11-01) No qahub.json: the session start asks QA Hub with the folder's GitHub remotes —
+// one project → used for this session (kept in .qahub/, git-ignored; never written to the repo); several → asks; one the
+// person can't open → named, with who to ask. A linked project they can't open is said at the start, not at the first tool.
+test("an unlinked checkout: QA Hub names its project from the GitHub repo — used for the session, never written to the repo", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-repo-"));
+  execFileSync("git", ["init", "-q", repo]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", "git@github.com:ana/freight-portal.git"]);
+  execFileSync("git", ["-C", repo, "remote", "add", "upstream", "https://github.com/acme/freight-portal.git"]);
+  const env = { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base };
+  const start = async () => JSON.parse((await hook("hooks/session-start.mjs", { cwd: repo }, env)).out).hookSpecificOutput.additionalContext;
+  try {
+    let asked;
+    repoAnswer = (repos) => { asked = repos; return { match: { slug: "freight", name: "Freight portal" } }; };
+    assert.match(await start(), /GitHub repo is the QA Hub project “Freight portal” \(freight\) — used for this session/);
+    assert.deepEqual(asked.sort(), ["acme/freight-portal", "ana/freight-portal"]);
+    assert.equal(fs.existsSync(path.join(repo, "qahub.json")), false, "never written to the repo");
+    const { projectAt } = await import("../server/index.mjs");
+    assert.equal(projectAt(repo), "freight");
+    // The hooks follow it: app code changed and no tests pushed → sent back to write them.
+    const { buildCheck } = await import("../hooks/build-check.mjs");
+    const edit = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(repo, "src/quotes.tsx") } }] } });
+    assert.equal(buildCheck({ cwd: repo }, edit, path.join(repo, ".seen"))?.decision, "block");
+
+    repoAnswer = () => ({ ambiguous: [{ slug: "web", name: "Web" }, { slug: "admin", name: "Admin" }] });
+    assert.match(await start(), /belongs to several QA Hub projects: “Web” \(web\), “Admin” \(admin\)[\s\S]*ask the user which/);
+    assert.equal(projectAt(repo), null, "an ambiguous answer forgets the earlier one");
+
+    repoAnswer = () => ({ noAccess: { slug: "locked", name: "Freight admin" } });
+    assert.match(await start(), /QA Hub project “Freight admin” \(locked\), and you don't have access to it — ask an admin/);
+    assert.equal(projectAt(repo), null);
+  } finally { repoAnswer = () => ({ none: true }); }
+});
+
+test("no access to the linked project: said at session start; linking to it says so instead of \"no such project\"", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-locked-"));
+  fs.writeFileSync(path.join(dir, "qahub.json"), JSON.stringify({ project: "locked" }));
+  const { out } = await hook("hooks/session-start.mjs", { cwd: dir }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
+  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /NO ACCESS: you don't have access to the QA Hub project “locked”[\s\S]*ask an admin/);
+  const t = as("qh_good");
+  await assert.rejects(t.qahub_link({ project: "locked" }), /You don't have access to “locked” — ask an admin/);
+  await assert.rejects(t.qahub_link({ project: "nothing" }), /No project “nothing”/);
 });

@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { appRoot } from "../server/index.mjs";
+import { appRoot, projectAt } from "../server/index.mjs";
 import { isMain } from "../server/qahub.mjs";
 import { isTestFile } from "./test-checklist.mjs";
 
@@ -66,7 +66,7 @@ export function uiChange(input, state) {
   if (!pairs.length || typeof ti.file_path !== "string") return null;
   const file = path.resolve(input?.cwd || process.cwd(), ti.file_path);
   const root = appRoot(path.dirname(file));
-  if (!fs.existsSync(path.join(root, "qahub.json"))) return null;
+  if (!projectAt(root)) return null;
   const rel = path.relative(root, file).split(path.sep).join("/");
   if (rel.startsWith("..") || isTestish(rel) || rel.split("/").some((p) => SKIP_DIRS.has(p))) return null;
   let current = ""; try { current = fs.readFileSync(file, "utf8"); } catch { /* deleted */ }
