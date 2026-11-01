@@ -19,7 +19,7 @@ export async function pushCheck(input, env = process.env) {
     if (run?.status !== "finished" || !run.failed) return null;
     const names = run.failures.slice(0, 3).map((f) => `${f.ref} “${f.title}”`).join(", ");
     return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask",
-      permissionDecisionReason: `QA Hub's latest run of ${project} (run #${run.number}: ${run.failed} test${run.failed === 1 ? "" : "s"} failing — ${names}${run.failed > 3 ? ", …" : ""}). Push anyway? ${qa.origin()}${run.url}` } };
+      permissionDecisionReason: `QA Hub's latest run of ${project} (run ID #${run.number}: ${run.failed} test${run.failed === 1 ? "" : "s"} failing — ${names}${run.failed > 3 ? ", …" : ""}). Push anyway? ${qa.origin()}${run.url}` } };
   } catch { return null; }
 }
 

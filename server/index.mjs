@@ -358,8 +358,8 @@ export function whereItFailed(ctx, values) {
 
 export function describeRun(run, origin) {
   const url = `${origin}${run.url}`;
-  if (run.status === "running") return `Run #${run.number} is still running (${run.tests} test${run.tests === 1 ? "" : "s"}) — ${url}\nAsk again with qahub_results { run: ${run.number}, wait: true }.`;
-  const lines = [`Run #${run.number} finished: ${run.passed} passed, ${run.failed} failed${run.skipped ? `, ${run.skipped} skipped` : ""}${run.browser ? ` (${run.browser}${run.durationSec ? `, ${run.durationSec} s` : ""})` : ""}${run.failed || run.verdict !== "pass" ? "" : " — all passed"} — ${url}`];
+  if (run.status === "running") return `Run ID #${run.number} is still running (${run.tests} test${run.tests === 1 ? "" : "s"}) — ${url}\nAsk again with qahub_results { run: ${run.number}, wait: true }.`;
+  const lines = [`Run ID #${run.number} finished: ${run.passed} passed, ${run.failed} failed${run.skipped ? `, ${run.skipped} skipped` : ""}${run.browser ? ` (${run.browser}${run.durationSec ? `, ${run.durationSec} s` : ""})` : ""}${run.failed || run.verdict !== "pass" ? "" : " — all passed"} — ${url}`];
   if (run.trial) lines.push("This was a try of a test that hasn't passed yet: it stays out of Results, and nobody is told. The first passing try goes into Results.");
   if (run.verdict === "stopped") lines.push(`It stopped before the end${run.stopReason ? `: ${run.stopReason}` : ""}.`);
   for (const f of run.failures ?? []) {
@@ -513,7 +513,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       let run;
       try { ({ run } = await qa.call("GET", `/api/v1/projects/${p}/runs/${number}?shots=1`)); misses = 0; } catch (e) {
         if (number === "latest" || !["unreachable", "timeout", "server", "not_qahub"].includes(e.code)) throw e;
-        if (++misses > 3) throw new QaHubError(`${e.message} Run #${number} was started and may still be going — read it later with qahub_results { run: ${number}, wait: true }. Don't start it again.`, e.code);
+        if (++misses > 3) throw new QaHubError(`${e.message} Run ID #${number} was started and may still be going — read it later with qahub_results { run: ${number}, wait: true }. Don't start it again.`, e.code);
         await new Promise((r) => setTimeout(r, pollMs));
         continue;
       }
@@ -779,8 +779,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         throw e;
       });
       // QA Hub found the same run already going (this call is a retry): it's that run, not a second one.
-      const said0 = run.alreadyStarted ? `Run #${run.number} was already started a moment ago (the same tests) — following it instead of starting another`
-        : `Run #${run.number} started: ${run.tests} test${run.tests === 1 ? "" : "s"} on ${run.environment}`;
+      const said0 = run.alreadyStarted ? `Run ID #${run.number} was already started a moment ago (the same tests) — following it instead of starting another`
+        : `Run ID #${run.number} started: ${run.tests} test${run.tests === 1 ? "" : "s"} on ${run.environment}`;
       const said = run.trial ? `${said0} (a try — these tests haven't passed yet, so it stays out of Results until it passes)` : said0;
       if (!wait) return `${said} — ${qa.origin()}${run.url}\nRead it with qahub_results { run: ${run.number}, wait: true }.`;
       return follow(p, run.number, true);
@@ -800,7 +800,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const content = [{ type: "text", text: `${fixes.length} failing test${fixes.length === 1 ? "" : "s"} a person asked you to fix. For each: find the cause — the app (a bug: fix the app) or the test (the app changed on purpose: update the test). Never make it pass by checking less or waiting longer. Then qahub_fix_note in plain words, push the test if you changed it, and qahub_run { tests: [its ref] }.` }];
       for (const f of fixes) {
         content.push({ type: "text", text: [
-          `${f.ref} “${f.title}” (${f.file ?? "recorded test"}) — failed in run #${f.run}${f.stepTitle ? ` at step ${f.step + 1}, “${f.stepTitle}”` : ""}; asked by ${f.askedBy}; try ${f.attempt} of 3.`,
+          `${f.ref} “${f.title}” (${f.file ?? "recorded test"}) — failed in run ID #${f.run}${f.stepTitle ? ` at step ${f.step + 1}, “${f.stepTitle}”` : ""}; asked by ${f.askedBy}; try ${f.attempt} of 3.`,
           f.description ? `What it's for: ${f.description}` : "",
           `Steps: ${f.steps.join(" → ")}`,
           `What went wrong: ${f.plain ?? "?"}`,

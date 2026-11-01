@@ -353,14 +353,14 @@ test("qahub_run runs on the person's computer, waits, and says what failed, wher
   await t.qahub_link({ project: "freight" });
   const said = await t.qahub_run({ tests: ["TEST-00004", "TEST-00002"] });
   assert.deepEqual(started.at(-1), { tests: ["TEST-00004", "TEST-00002"], headless: true });
-  assert.match(said, /Run #8 finished: 1 passed, 1 failed/);
+  assert.match(said, /Run ID #8 finished: 1 passed, 1 failed/);
   assert.match(said, /TEST-00004 “Save a quote” \(tests\/quotes\.spec\.ts\) failed at “Save it”/);
   assert.match(said, /the app broke/);
   assert.match(said, /Expected: Quote saved/);
   assert.match(said, /Flaky: TEST-00002/);
   assert.match(said, new RegExp(`${base}/p/freight/runs/8`));
   // Not waiting: it says the number to ask about.
-  assert.match(await t.qahub_run({ tag: "smoke", wait: false, show: true }), /Run #8 started/);
+  assert.match(await t.qahub_run({ tag: "smoke", wait: false, show: true }), /Run ID #8 started/);
   assert.deepEqual(started.at(-1), { tag: "smoke", headless: false });
   // Production runs like any place: named, nothing else asked.
   await t.qahub_run({ tag: "smoke", wait: false, environment: "Production" });
@@ -374,7 +374,7 @@ test("qahub_run runs on the person's computer, waits, and says what failed, wher
 test("qahub_results reads the latest run, or a run by number", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
-  assert.match(await t.qahub_results({}), /Run #7 finished: 3 passed, 0 failed — all passed/);
+  assert.match(await t.qahub_results({}), /Run ID #7 finished: 3 passed, 0 failed — all passed/);
   polls = 5;
   assert.match(await t.qahub_results({ run: 8 }), /1 failed/);
 });
@@ -391,7 +391,7 @@ test("before git push: asks the person when the latest run has failures; quiet o
   assert.equal(ask.code, 0);
   const o = JSON.parse(ask.out).hookSpecificOutput;
   assert.equal(o.permissionDecision, "ask");
-  assert.match(o.permissionDecisionReason, /run #8: 1 test failing — TEST-00004 “Save a quote”/);
+  assert.match(o.permissionDecisionReason, /run ID #8: 1 test failing — TEST-00004 “Save a quote”/);
   assert.equal((await gate("npm test")).out, "", "only git push is checked");
   assert.equal((await gate("git push", "qh_good", "http://127.0.0.1:1")).out, "", "QA Hub down: the push goes ahead");
   latest = { run: { number: 9, status: "finished", verdict: "pass", passed: 2, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/9" } };
@@ -624,15 +624,15 @@ test("an address that answers but isn't QA Hub is said plainly — never 'your p
 test("following a run: a blip is asked again; if QA Hub stays down, the run number is never lost", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
-  assert.match(await t.qahub_run({ tag: "blip" }), /Run #9 finished/);
-  await assert.rejects(t.qahub_run({ tag: "down" }), /Run #10 was started[\s\S]*qahub_results \{ run: 10, wait: true \}[\s\S]*Don't start it again/);
+  assert.match(await t.qahub_run({ tag: "blip" }), /Run ID #9 finished/);
+  await assert.rejects(t.qahub_run({ tag: "down" }), /Run ID #10 was started[\s\S]*qahub_results \{ run: 10, wait: true \}[\s\S]*Don't start it again/);
 });
 
 test("a run start that hits a blip is tried again with the SAME Idempotency-Key — QA Hub answers with that run, never a second one", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
-  assert.match(await t.qahub_run({ tag: "retry", wait: false }), /Run #11 started/);
-  assert.match(await t.qahub_run({ tag: "retry", wait: false }), /Run #11 started/);
+  assert.match(await t.qahub_run({ tag: "retry", wait: false }), /Run ID #11 started/);
+  assert.match(await t.qahub_run({ tag: "retry", wait: false }), /Run ID #11 started/);
   assert.equal(keys.length, 4);
   assert.match(keys[0], /^[0-9a-f-]{36}$/);
   assert.equal(keys[1], keys[0], "the retry carries its call's key");
@@ -737,7 +737,7 @@ test("Ask Claude to fix it: Claude brings it up at session start, asks first, se
   fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
   const { out } = await hook("hooks/session-start.mjs", { cwd: app }, { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base });
   const said = JSON.parse(out).hookSpecificOutput.additionalContext;
-  assert.match(said, /FIX REQUESTS: a person asked you in QA Hub to fix a failing test: TEST-00005 “Cancelling Create training saves nothing” \(run #8, at “Open Create training again”: The “Title” box/);
+  assert.match(said, /FIX REQUESTS: a person asked you in QA Hub to fix a failing test: TEST-00005 “Cancelling Create training saves nothing” \(run ID #8, at “Open Create training again”: The “Title” box/);
   assert.match(said, /shall I fix it now\?" Don't change code before they say yes/);
 
   const t = as("qh_good");
@@ -765,7 +765,7 @@ test("a run QA Hub says was already started (Claude retrying after a timeout) is
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
   polls = 0;
-  assert.match(await t.qahub_run({ tag: "again", wait: false }), /Run #8 was already started a moment ago/);
+  assert.match(await t.qahub_run({ tag: "again", wait: false }), /Run ID #8 was already started a moment ago/);
 });
 
 test("a failure comes with where it happened: the page, the failing code lines, the values it typed", async () => {
