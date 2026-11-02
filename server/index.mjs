@@ -306,7 +306,7 @@ export const TOOLS = [
         browser: { type: "string", enum: ["chrome", "firefox", "webkit", "edge"] },
         show: { type: "boolean", description: "true opens a visible browser window on the person's computer (default: runs in the background)" },
         repeat: { type: "integer", minimum: 1, maximum: 10, description: "Run each test this many times in a row. A test with dynamic data (data linked to variables) gets NEW values on every try — repeat 5 tries 5 different inputs, and a failure shows the values that broke it (a bug that depends on the data, not a flaky test). Without dynamic data, 5 checks whether a test is flaky (\"Failed 2 of 5 times\")" },
-        parallel: { type: "integer", minimum: 1, maximum: 8, description: "How many tests run at once, each in its own tab (default 4). A test with needs still waits for that test; tests on a one-at-a-time account take turns. 1 only for tests that change the same data and can't run side by side" },
+        parallel: { type: "integer", minimum: 1, maximum: 8, description: "How many tests run at once, each in its own tab (default 1: one by one). A test with needs still waits for that test; tests on a one-at-a-time account take turns. 1 only for tests that change the same data and can't run side by side" },
         where: { type: "string", enum: ["computer", "server"], description: "\"server\" runs it on QA Hub's own test computers (no computer of the person's needed; always headless; only for apps reachable from the internet). Default: the person's computer" },
         wait: { type: "boolean", description: "Wait for the result (default true, up to about 5 minutes); false returns the run number at once" },
       },
