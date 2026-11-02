@@ -83,8 +83,13 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
     // A 404 or 5xx with no QA Hub explanation is QA Hub restarting or being updated — not "not found": one more try in
     // a few seconds, then said as it is.
     if (!res.ok && !json?.error && [404, 502, 503, 504].includes(res.status)) {
-      if (again) { await new Promise((r) => setTimeout(r, 3_000)); return call(method, path, body, { timeout, again: false, headers }); }
-      throw new QaHubError(`QA Hub at ${origin} isn't answering properly right now (${res.status} — it may be restarting or updating). Nothing was saved; try again in a minute.`, "unavailable");
+      // A 502/504 can come after QA Hub did the work: a write is tried again only when that's safe (a read, or a run start
+      // with its Idempotency-Key) — never a second push, plan or save.
+      const safe = method === "GET" || !!headers["Idempotency-Key"] || [404, 503].includes(res.status);
+      if (again && safe) { await new Promise((r) => setTimeout(r, 3_000)); return call(method, path, body, { timeout, again: false, headers }); }
+      throw new QaHubError(safe
+        ? `QA Hub at ${origin} isn't answering properly right now (${res.status} — it may be restarting or updating). Nothing was saved; try again in a minute.`
+        : `QA Hub at ${origin} didn't answer properly (${res.status}), so what you sent may have been saved — check before sending it again.`, "unavailable");
     }
     if (!res.ok) throw explain(res.status, json, origin);
     // A page that answers but isn't QA Hub (a website, a login portal, a typo'd address) — never read as "no data".

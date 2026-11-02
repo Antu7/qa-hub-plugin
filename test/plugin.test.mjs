@@ -187,6 +187,10 @@ test("push sends the checkout's branch, says it is waiting, and qahub_learn send
     assert.equal(pulls.at(-1), "feature-x");
     await t.qahub_learn({ topic: "Quotes", body: "x", files: [] });
     assert.equal(learned.at(-1).branch, "feature-x");
+    // Both body and add: refused in words — the add was silently dropped and the reply said "Saved".
+    const before = learned.length;
+    await assert.rejects(t.qahub_learn({ topic: "Quotes", body: "The whole topic, rewritten.", add: { Journey: ["A new fact"] }, files: [] }), /add or body, not both/);
+    assert.equal(learned.length, before, "nothing sent");
     // The server's own note, when it sends one, is told too.
     execFileSync("git", ["-C", dir, "checkout", "-q", "-b", "feature-note"]);
     assert.match(await t.qahub_push({ files: ["tests/quotes.spec.ts"] }), /Waiting for feature-note[\s\S]*Your own words\./);
@@ -1281,6 +1285,11 @@ test("a bare 404 or 503 (QA Hub restarting) is tried once more, and said as it i
   await assert.rejects(down.call("GET", "/api/v1/projects"), (e) => e.code === "unavailable" && /restarting or updating[\s\S]*Nothing was saved/.test(e.message));
   const real = client({ key: "qh_live_test", server: "http://localhost:3100", fetchImpl: async () => ({ ok: false, status: 404, text: async () => JSON.stringify({ error: { code: "not_found", message: "Project not found" } }) }) });
   await assert.rejects(real.call("GET", "/api/v1/projects/x"), (e) => e.code === "not_found" && e.message === "Project not found");
+  // A push (or any write) answered 502/504 by the proxy may have landed: never sent twice, and never "Nothing was saved".
+  let pushes = 0;
+  const gw = client({ key: "qh_live_test", server: "http://localhost:3100", fetchImpl: async () => { pushes++; return page(504); } });
+  await assert.rejects(gw.call("POST", "/api/v1/projects/freight/tests", { tests: [] }), (e) => e.code === "unavailable" && /may have been saved/.test(e.message) && !/Nothing was saved/.test(e.message));
+  assert.equal(pushes, 1, "a write is not sent again after a gateway error");
 });
 
 test("keep going never extends another hook's send-back, and never runs in the recorder chat (it has its own loop)", async () => {

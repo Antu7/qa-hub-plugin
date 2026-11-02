@@ -664,8 +664,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     async qahub_learn({ topic, body, add, files, sha, project } = {}) {
       await qa.whoami();
       const p = projectOf(project);
+      // One or the other: sending both used to save the body and drop the new facts without a word.
+      if (add && body !== undefined) throw new QaHubError("Send add or body, not both: add for your new facts (merged in), body to replace the whole topic.");
       // New lines only: QA Hub merges them into whatever version is there — no basedOn, nothing to clobber.
-      if (add && body === undefined) {
+      if (add) {
         const branch = gitBranch(root);
         await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, add, files: files ?? [], ...(sha ? { sha } : {}), ...(branch ? { branch } : {}) });
         return `Added to “${topic}” — every teammate's Claude reads it now.`;
