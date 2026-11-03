@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.64";
+export const VERSION = "0.7.65";
 /** Where QA Hub lives unless the plugin settings name another address. One place, used by the server and the hooks. */
 export const DEFAULT_SERVER = "https://app.qahub.dev";
 
@@ -156,3 +156,15 @@ export function gitBranch(cwd, home = os.homedir()) {
     return !b || b === "HEAD" || real(top) === real(home) ? null : b;
   } catch { return null; }
 }
+
+/** A hook's run: its JSON input (stdin) to `fn`, whose answer, if any, goes out as JSON — an error never blocks Claude Code. */
+export function hookMain(fn) {
+  let raw = "";
+  process.stdin.on("data", (c) => (raw += c));
+  process.stdin.on("end", async () => {
+    try { const out = await fn(JSON.parse(raw || "{}")); if (out) process.stdout.write(JSON.stringify(out)); } catch { /* never block */ }
+  });
+}
+
+/** The session's id, safe in a file name (the hooks keep a little state per session). */
+export const sessionOf = (input) => String(input?.session_id ?? "nosession").replace(/[^\w-]/g, "").slice(0, 80);

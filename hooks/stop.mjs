@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isMain } from "../server/qahub.mjs";
+import { hookMain, isMain, sessionOf } from "../server/qahub.mjs";
 import { buildCheck } from "./build-check.mjs";
 import { staleCheck } from "./ui-change.mjs";
 import { failedIn, keepGoing, leftOf, qahubCalls, ranIn } from "./keep-going.mjs";
@@ -64,21 +64,14 @@ export async function keepGoingCheck(input, transcript, roundsFile, env = proces
   return out;
 }
 
-if (isMain(import.meta.url)) {
-  let raw = "";
-  process.stdin.on("data", (c) => (raw += c));
-  process.stdin.on("end", async () => {
-    try {
-      const input = JSON.parse(raw || "{}");
-      const transcript = input.transcript_path ? fs.readFileSync(input.transcript_path, "utf8") : "";
-      const id = String(input.session_id ?? "nosession").replace(/[^\w-]/g, "").slice(0, 80);
-      const first = stopCheck(input, transcript, {
-        seen: path.join(os.tmpdir(), `qahub-build-${id}`),
-        state: path.join(os.tmpdir(), `qahub-ui-${id}.json`),
-      });
-      const more = await keepGoingCheck(input, transcript, path.join(os.tmpdir(), `qahub-keep-${id}.json`)).catch(() => null);
-      const reasons = [first?.reason, more?.reason].filter(Boolean);
-      if (reasons.length) process.stdout.write(JSON.stringify({ decision: "block", reason: reasons.join("\n\n") }));
-    } catch { /* never block */ }
+if (isMain(import.meta.url)) hookMain(async (input) => {
+  const transcript = input.transcript_path ? fs.readFileSync(input.transcript_path, "utf8") : "";
+  const id = sessionOf(input);
+  const first = stopCheck(input, transcript, {
+    seen: path.join(os.tmpdir(), `qahub-build-${id}`),
+    state: path.join(os.tmpdir(), `qahub-ui-${id}.json`),
   });
-}
+  const more = await keepGoingCheck(input, transcript, path.join(os.tmpdir(), `qahub-keep-${id}.json`)).catch(() => null);
+  const reasons = [first?.reason, more?.reason].filter(Boolean);
+  return reasons.length ? { decision: "block", reason: reasons.join("\n\n") } : null;
+});

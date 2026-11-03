@@ -1473,3 +1473,34 @@ test("no access to the linked project: said at session start; linking to it says
   await assert.rejects(t.qahub_link({ project: "locked" }), /You don't have access to “locked” — ask an admin/);
   await assert.rejects(t.qahub_link({ project: "nothing" }), /No project “nothing”/);
 });
+
+test("qahub_wait_review rides out QA Hub restarting mid-wait — it asks again instead of ending the person's review", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-wait-"));
+  let asks = 0;
+  const json = (status, body) => new Response(body === undefined ? "" : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const fake = async (url) => {
+    const u = new URL(url).pathname;
+    if (u === "/api/v1/me") return json(200, { company: { active: true } });
+    if (u.endsWith("/gaps")) return json(200, {});
+    asks++;
+    // 1st and 2nd: a deploy restarting QA Hub (503 with no QA Hub error, twice = the client's own retry used up).
+    if (asks <= 2) return json(503);
+    return json(200, { tests: [{ ref: "TEST-00010", title: "Saves a draft", stage: asks < 4 ? "planned" : "active" }] });
+  };
+  const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: "https://qa.test" }, dir, fake, { reviewMs: 5 });
+  const said = await t.qahub_wait_review({ tests: ["TEST-00010"], project: "shop" });
+  assert.match(said, /Approved — write their code now.*TEST-00010/);
+  assert.ok(asks >= 4, `asked again after the restart (${asks} asks)`);
+});
+
+test("qahub_push's schema carries QA Hub's limits, so Claude's push fits before it's sent", async () => {
+  const { TOOLS } = await import("../server/index.mjs");
+  const push = TOOLS.find((x) => x.name === "qahub_push").inputSchema;
+  const t = push.properties.tests.items.properties;
+  assert.equal(t.title.maxLength, 140);
+  assert.equal(t.steps.maxItems, 50);
+  assert.equal(t.waiver.minLength, 20);
+  assert.equal(t.distinctFrom.items.pattern, "^TEST-\\d{1,9}$");
+  assert.equal(push.properties.remove.maxItems, 100);
+  assert.equal(push.properties.modules.items.properties.path.pattern, "^/");
+});

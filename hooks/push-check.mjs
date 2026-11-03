@@ -3,7 +3,7 @@
 // (the plan's "a gate warns if tests are failing"). Quiet when everything passed, when nothing is linked,
 // and when QA Hub can't be reached — a check that fails must never block someone's push. Never prints the key.
 import { appRoot, projectAt } from "../server/index.mjs";
-import { client, isMain } from "../server/qahub.mjs";
+import { client, hookMain, isMain } from "../server/qahub.mjs";
 
 export async function pushCheck(input, env = process.env) {
   const cmd = String(input?.tool_input?.command ?? "");
@@ -22,10 +22,4 @@ export async function pushCheck(input, env = process.env) {
   } catch { return null; }
 }
 
-if (isMain(import.meta.url)) {
-  let raw = "";
-  process.stdin.on("data", (c) => (raw += c));
-  process.stdin.on("end", async () => {
-    try { const out = await pushCheck(JSON.parse(raw || "{}")); if (out) process.stdout.write(JSON.stringify(out)); } catch { /* never block */ }
-  });
-}
+if (isMain(import.meta.url)) hookMain((input) => pushCheck(input));

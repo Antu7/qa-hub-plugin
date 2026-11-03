@@ -250,25 +250,26 @@ export const TOOLS = [
           items: {
             type: "object", additionalProperties: false, required: ["file", "title", "module", "steps"],
             properties: {
-              file: { type: "string" }, title: { type: "string" }, module: { type: "string" },
-              tags: { type: "array", items: { type: "string" } },
-              steps: { type: "array", items: { anyOf: [{ type: "string" }, { type: "object", required: ["title", "expect"], properties: { title: { type: "string" }, expect: { type: "string" } } }] }, description: "Its test.step names in order, each with what should happen (for a test QA Hub already has, plain strings keep the stored expected results). Every quoted text and number an expected result names must be in a check — else refused" },
+              // The limits QA Hub's push enforces (store.ts pushInput), so a push isn't refused for them (review 2026-11-03).
+              file: { type: "string" }, title: { type: "string", minLength: 3, maxLength: 140 }, module: { type: "string", minLength: 1, maxLength: 40 },
+              tags: { type: "array", maxItems: 10, items: { type: "string" } },
+              steps: { type: "array", minItems: 1, maxItems: 50, items: { anyOf: [{ type: "string", maxLength: 200 }, { type: "object", required: ["title", "expect"], properties: { title: { type: "string", maxLength: 200 }, expect: { type: "string", maxLength: 300 } } }] }, description: "Its test.step names in order, each with what should happen (for a test QA Hub already has, plain strings keep the stored expected results). Every quoted text and number an expected result names must be in a check — else refused" },
               type: { type: "string", enum: ["functional", "negative", "boundary", "validation", "permission", "workflow", "smoke"], description: "Required for a new test" }, priority: { type: "string", enum: ["high", "medium", "low"] },
-              preconditions: { type: "string" }, covers: { type: "array", items: { type: "string" }, description: "Behaviour names of its module it verifies (required for a new test unless smoke)" },
-              waiver: { type: "string", description: "Only with a true reason (20+ characters) why the code can't prove what QA Hub's depth check asks, or can't check a value a step expects — shown in QA Hub; the behaviour then never reads proven" },
+              preconditions: { type: "string", maxLength: 1000 }, covers: { type: "array", maxItems: 20, items: { type: "string", maxLength: 120 }, description: "Behaviour names of its module it verifies (required for a new test unless smoke)" },
+              waiver: { type: "string", minLength: 20, maxLength: 300, description: "Only with a true reason (20+ characters) why the code can't prove what QA Hub's depth check asks, or can't check a value a step expects — shown in QA Hub; the behaviour then never reads proven" },
               description: { type: "string", maxLength: 600, description: "1-3 plain sentences: what the test checks, which user or situation it stands for, and what would count as broken. Always fill it — you and others read it when coming back to this test." },
               replaces: { type: "string", description: "The test's ref (e.g. TEST-00012) when this push renames it or moves it to another file — it keeps its number and history" },
               applied: { type: "boolean", description: "true when this push applies the change request qahub_gaps listed for this test" },
-              sets: { type: "array", items: { type: "string" }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
-              distinctFrom: { type: "array", items: { type: "string" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
+              sets: { type: "array", maxItems: 10, items: { type: "string", maxLength: 80 }, description: "Hand-picked sets (by name, from qahub_project) this test should join — only when the person asked, or it clearly belongs (e.g. a release check)" },
+              distinctFrom: { type: "array", maxItems: 20, items: { type: "string", pattern: "^TEST-\\d{1,9}$" }, description: "Refs QA Hub flagged as possible duplicates that you read and that test something else" },
               knownBug: { type: "string", maxLength: 300, description: "Only in the recorder chat, only for a test that checks the RIGHT behaviour and fails because the APP is wrong: what is wrong, in plain words. Such a test is saved tagged known-bug and waits for the person's approval with the others — every other test must have passed in try_tests first. Push it as soon as you saw the bug (no more tries for it) and say it in one line (\"Bug found: expected …, saw …\")." },
               data: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$" }, value: { type: "string", maxLength: 500 }, variable: { type: "string", pattern: "^[a-z][a-z0-9_]{0,39}$", description: "A project variable (qahub_project → Variables, or one you send in variables) that gives this value a NEW value every run; value stays the fallback" } } }, description: "The values the test types: name (lower_snake_case), default, and — for anything whose exact value doesn't decide what the test proves (names, titles, emails, amounts, dates, notes) — variable, so every run tries different data. The code reads them: const data = JSON.parse(process.env.QAHUB_DATA ?? \"{}\"); data.course_title ?? \"Fire safety basics\" — and checks the app shows data.course_title, never a hard-coded copy. A person's own choice (a value made fixed or linked elsewhere) survives your push. Leave out = unchanged" },
-              runAs: { type: "string", description: "The test account this test starts signed in as — a name from qahub_project's Test accounts, chosen by ROLE for what the test proves (a permission test runs as the role that should, or shouldn't, be allowed). Leave out for the default account. Switching mid-test: await qahub.signInAs(page, \"<name>\"); a second person at the same time: const other = await qahub.as(\"<name>\") — a second signed-in page (take qahub from the test's fixtures), name written out" },
+              runAs: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,29}$", description: "The test account this test starts signed in as — a name from qahub_project's Test accounts, chosen by ROLE for what the test proves (a permission test runs as the role that should, or shouldn't, be allowed). Leave out for the default account. Switching mid-test: await qahub.signInAs(page, \"<name>\"); a second person at the same time: const other = await qahub.as(\"<name>\") — a second signed-in page (take qahub from the test's fixtures), name written out" },
               needs: { type: "array", maxItems: 10, items: { type: "string" }, description: "ONLY when this test uses what another test makes (\"Delete the order\" needs \"Create an order\"): that test's ref or exact title (one in this push counts). It then runs first, and if it fails this test is skipped — every other test still runs. Leave out for an independent test (the normal case); [] removes a link" },
             },
           },
         },
-        behaviours: { type: "array", items: { type: "object", required: ["module", "name", "kind"], properties: { module: { type: "string" }, name: { type: "string" }, kind: { type: "string", enum: ["create", "view", "edit", "delete", "search", "validation", "workflow", "permission", "calculation", "navigation", "other"] }, priority: { type: "string", enum: ["high", "medium", "low"] }, description: { type: "string" } } }, description: "Behaviours the app has that QA Hub doesn't list yet (a test in this push may cover one)" },
+        behaviours: { type: "array", maxItems: 100, items: { type: "object", required: ["module", "name", "kind"], properties: { module: { type: "string", minLength: 1, maxLength: 200 }, name: { type: "string", minLength: 2, maxLength: 120 }, kind: { type: "string", enum: ["create", "view", "edit", "delete", "search", "validation", "workflow", "permission", "calculation", "navigation", "other"] }, priority: { type: "string", enum: ["high", "medium", "low"] }, description: { type: "string" } } }, description: "Behaviours the app has that QA Hub doesn't list yet (a test in this push may cover one)" },
         variables: {
           type: "array", maxItems: 30, description: "Project variables a test's data links to that qahub_project doesn't list yet — created (one that exists is the person's and is left as it is). Reuse an existing one when it fits. Rules must be what the app ACCEPTS (a title field taking 3–80 characters: minLength 3, maxLength 80), so every drawn value is valid input",
           items: { type: "object", additionalProperties: false, required: ["name", "kind"], properties: {
@@ -283,11 +284,11 @@ export const TOOLS = [
             tricky: { type: "string", enum: ["no", "sometimes"], description: "sometimes = about one run in five uses an edge value inside the rules (the longest/shortest allowed, accents, quotes and <, other scripts, min/max/0) — use it for fields where that finds bugs" },
           } },
         },
-        remove: { type: "array", items: { type: "string" }, description: "Refs of tests to take out on purpose (they go to QA Hub's recycle bin) — e.g. a test deleted from its file. Never to get past a refusal." },
+        remove: { type: "array", maxItems: 100, items: { type: "string", pattern: "^TEST-\\d{1,9}$" }, description: "Refs of tests to take out on purpose (they go to QA Hub's recycle bin) — e.g. a test deleted from its file. Never to get past a refusal." },
         labels: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["name", "description"], properties: { name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,29}$" }, description: { type: "string", maxLength: 200, description: "What the label means, in plain words a non-tester understands" } } }, description: "New labels a test of this push uses that qahub_project's Labels doesn't have — only when no existing label fits. An existing label is never changed here." },
         expectChanged: { type: "string", minLength: 10, maxLength: 300, description: "ONLY when QA Hub refused a fix for expecting exactly what the failing run saw AND the app really changed on purpose — why (kept in the test's history). If the app is wrong, keep the check: the failure is the bug" },
         fewerChecks: { type: "string", minLength: 20, maxLength: 300, description: "ONLY when a check (expect) truly has to go because the app changed on purpose — the real reason. A push that makes any existing test check less (helpers one call deep) is refused without it; never use it to make a failing test pass" },
-        modules: { type: "array", items: { type: "object", properties: { name: { type: "string" }, path: { type: "string" }, parent: { type: "string", description: "The parent module's path, for a sub-page (e.g. /quotes for /quotes/print)" } }, required: ["name", "path"] }, description: "Modules the app has that QA Hub doesn't yet (qahub_project lists what exists): each with its URL path and, for a sub-page, its parent's path. QA Hub adds them; it never renames an existing module." },
+        modules: { type: "array", maxItems: 100, items: { type: "object", properties: { name: { type: "string", minLength: 1, maxLength: 40 }, path: { type: "string", maxLength: 200, pattern: "^/" }, parent: { type: "string", maxLength: 200, pattern: "^/", description: "The parent module's path, for a sub-page (e.g. /quotes for /quotes/print)" } }, required: ["name", "path"] }, description: "Modules the app has that QA Hub doesn't yet (qahub_project lists what exists): each with its URL path and, for a sub-page, its parent's path. QA Hub adds them; it never renames an existing module." },
       },
     },
   },
@@ -500,7 +501,7 @@ export function describeDesign(d) {
 // When this session started (this process): knowledge saved after it is news to the Claude that read it at the start.
 const SESSION_START = new Date(Date.now() - process.uptime() * 1000);
 
-export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch, { pollMs = 3_000, waitMs = 5 * 60_000, sessionStart = SESSION_START } = {}) {
+export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch, { pollMs = 3_000, waitMs = 5 * 60_000, reviewMs = 8_000, sessionStart = SESSION_START } = {}) {
   const qa = client({ key: env.QAHUB_KEY, server: env.QAHUB_SERVER, fetchImpl });
   const root = appRoot(cwd);
   // Per project: saves after this were not told yet. Each is told once — then `since` moves past it.
@@ -532,7 +533,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     for (let misses = 0; ;) {
       let run;
       try { ({ run } = await qa.call("GET", `/api/v1/projects/${p}/runs/${number}?shots=1`)); misses = 0; } catch (e) {
-        if (number === "latest" || !["unreachable", "timeout", "server", "not_qahub"].includes(e.code)) throw e;
+        if (number === "latest" || !BLIPS.includes(e.code)) throw e;
         if (++misses > 3) throw new QaHubError(`${e.message} Run ID #${number} was started and may still be going — read it later with qahub_results { run: ${number}, wait: true }. Don't start it again.`, e.code);
         await new Promise((r) => setTimeout(r, pollMs));
         continue;
@@ -646,11 +647,17 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const p = projectOf(project);
       const end = Date.now() + Math.min(15, Math.max(1, minutes)) * 60_000;
       for (;;) {
-        const st = await reviewState(qa, p);
+        let st;
+        // A blip (QA Hub slow or briefly down) waits on and asks again — never the end of the person's review.
+        try { st = await reviewState(qa, p); } catch (e) {
+          if (!BLIPS.includes(e.code) || Date.now() > end) throw e;
+          await new Promise((ok) => setTimeout(ok, reviewMs));
+          continue;
+        }
         const decided = refs.map((ref) => ({ ref, ...decision(st, ref) }));
         const open = decided.filter((d) => d.state === "waiting");
         if (!open.length || Date.now() > end) return reviewWords(decided, open.length > 0);
-        await new Promise((ok) => setTimeout(ok, 8_000));
+        await new Promise((ok) => setTimeout(ok, reviewMs));
       }
     },
 
@@ -1095,6 +1102,9 @@ export function building(root, refs = []) {
   if (refs.length) try { fs.writeFileSync(f, JSON.stringify(have)); } catch { /* best effort */ }
   return Object.keys(have);
 }
+
+/** QaHubError codes that mean "QA Hub didn't answer this time" (a deploy restarting it is `unavailable`) — asked again, never the end of a wait. */
+const BLIPS = ["unreachable", "timeout", "server", "unavailable", "rate_limited", "not_qahub"];
 
 export async function reviewState(qa, p) {
   const [proj, gaps] = await Promise.all([qa.call("GET", `/api/v1/projects/${p}`), qa.call("GET", `/api/v1/projects/${p}/gaps`).catch(() => ({}))]);

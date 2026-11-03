@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appRoot, projectAt } from "../server/index.mjs";
-import { isMain } from "../server/qahub.mjs";
+import { hookMain, isMain, sessionOf } from "../server/qahub.mjs";
 
 // The checklist lives once, at the end of the write-tests skill: this hands over that very section.
 const SKILL = path.join(path.dirname(fileURLToPath(import.meta.url)), "../skills/write-tests/SKILL.md");
@@ -27,15 +27,4 @@ export function checklistFor(input, seen) {
   return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: CHECKLIST } };
 }
 
-if (isMain(import.meta.url)) {
-  let raw = "";
-  process.stdin.on("data", (c) => (raw += c));
-  process.stdin.on("end", () => {
-    try {
-      const input = JSON.parse(raw || "{}");
-      const id = String(input.session_id ?? "nosession").replace(/[^\w-]/g, "").slice(0, 80);
-      const out = checklistFor(input, path.join(os.tmpdir(), `qahub-checklist-${id}`));
-      if (out) process.stdout.write(JSON.stringify(out));
-    } catch { /* never block */ }
-  });
-}
+if (isMain(import.meta.url)) hookMain((input) => checklistFor(input, path.join(os.tmpdir(), `qahub-checklist-${sessionOf(input)}`)));

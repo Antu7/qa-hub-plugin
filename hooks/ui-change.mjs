@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { appRoot, projectAt } from "../server/index.mjs";
-import { isMain } from "../server/qahub.mjs";
+import { hookMain, isMain, sessionOf } from "../server/qahub.mjs";
 import { isTestFile } from "./test-checklist.mjs";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage", "out", ".turbo", ".cache"]);
@@ -94,16 +94,7 @@ export function staleCheck(input, state) {
   return { decision: "block", reason: `Tests still look for words you took out of the app:\n${listOf(hits)}\nUpdate them to what the app says now and run them with qahub_run — or, if they're still right (the words are still in the app elsewhere), say so in one line and stop.` };
 }
 
-if (isMain(import.meta.url)) {
-  let raw = "";
-  process.stdin.on("data", (c) => (raw += c));
-  process.stdin.on("end", () => {
-    try {
-      const input = JSON.parse(raw || "{}");
-      const id = String(input.session_id ?? "nosession").replace(/[^\w-]/g, "").slice(0, 80);
-      const state = path.join(os.tmpdir(), `qahub-ui-${id}.json`);
-      const out = process.argv[2] === "stop" ? staleCheck(input, state) : uiChange(input, state);
-      if (out) process.stdout.write(JSON.stringify(out));
-    } catch { /* never block */ }
-  });
-}
+if (isMain(import.meta.url)) hookMain((input) => {
+  const state = path.join(os.tmpdir(), `qahub-ui-${sessionOf(input)}.json`);
+  return process.argv[2] === "stop" ? staleCheck(input, state) : uiChange(input, state);
+});
