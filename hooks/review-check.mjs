@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { appRoot, projectAt, reviewState } from "../server/index.mjs";
-import { client } from "../server/qahub.mjs";
+import { client, DATA_NOTE, said } from "../server/qahub.mjs";
 
 const input = await new Promise((ok) => {
   let raw = ""; const done = () => { process.stdin.destroy(); try { ok(JSON.parse(raw || "{}")); } catch { ok({}); } };
@@ -24,12 +24,12 @@ try {
   try { seen = JSON.parse(fs.readFileSync(seenFile, "utf8")); } catch { /* first time */ }
   const lines = [];
   const approved = [...st.tests.values()].filter((t) => t.stage === "approved" && !t.file && seen[t.ref] !== "approved");
-  if (approved.length) lines.push(`Approved in QA Hub, no code yet — write, push and run them now: ${approved.map((t) => `${t.ref} “${t.title}”`).join(", ")}.`);
+  if (approved.length) lines.push(`Approved in QA Hub, no code yet — write, push and run them now: ${approved.map((t) => `${t.ref} “${said(t.title)}”`).join(", ")}.`);
   const changes = [...st.changes.values()].filter((c) => c.stage === "planned" && seen[c.ref] !== `changes:${c.request?.at}`);
-  for (const c of changes) lines.push(`${c.ref} “${c.title}”: a person asked for changes — ${c.request?.note ?? ""}. Plan it again with the change.`);
+  for (const c of changes) lines.push(`${c.ref} “${said(c.title)}”: a person asked for changes — “${said(c.request?.note ?? "", 500)}”. Plan it again with the change.`);
   if (!lines.length) process.exit(0);
   for (const t of approved) seen[t.ref] = "approved";
   for (const c of changes) seen[c.ref] = `changes:${c.request?.at}`;
   fs.writeFileSync(seenFile, JSON.stringify(seen));
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `QA Hub, since the last message: ${lines.join(" ")}` } }));
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `QA Hub, since the last message: ${lines.join(" ")} (${DATA_NOTE})` } }));
 } catch { /* not linked, or QA Hub can't be reached: nothing to say */ }

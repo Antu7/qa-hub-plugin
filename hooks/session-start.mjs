@@ -4,7 +4,8 @@
 // Never prints the key. Never blocks the session: each call to QA Hub gets 3 s, so QA Hub being slow or
 // down costs a few seconds at most. In a folder that isn't linked to QA Hub it says one short line.
 import { appRoot, gitRepos, linkedProject, rememberProject } from "../server/index.mjs";
-import { client, publishedVersion, updateNote } from "../server/qahub.mjs";
+import { createHash } from "node:crypto";
+import { client, DATA_NOTE, publishedVersion, said, updateNote } from "../server/qahub.mjs";
 
 // The session's folder comes on stdin (Claude Code's hook input); give up waiting after a moment.
 const input = await new Promise((ok) => {
@@ -31,16 +32,19 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
   const read = (p) => Promise.all([qa.call("GET", `/api/v1/projects/${p}`).catch((e) => ({ failed: e })), qa.call("GET", `/api/v1/projects/${p}/fixes?shots=0`).catch(() => null)]);
   let extra = linked ? read(project) : null;
   // No qahub.json: QA Hub says which project this folder's GitHub repo is (origin and upstream — a fork's), across the whole
-  // company; asked with the key check. Never written to the repo: kept in .qahub/ for this session's tools and hooks.
+  // company; asked with the key check. Only each repo's SHA-256 is sent, never its name: QA Hub matches it against the
+  // repos linked to its projects, so a client's or a private repo's name never leaves this computer. Never written to
+  // the repo: kept in .qahub/ for this session's tools and hooks.
   const remotes = linked ? [] : gitRepos(root);
-  const lookup = remotes.length ? qa.call("GET", `/api/v1/projects?${remotes.map((r) => `repo=${encodeURIComponent(r)}`).join("&")}`).catch(() => null) : null;
+  const hashOf = (r) => createHash("sha256").update(r.toLowerCase()).digest("hex");
+  const lookup = remotes.length ? qa.call("GET", `/api/v1/projects?${remotes.map((r) => `repoHash=${hashOf(r)}`).join("&")}`).catch(() => null) : null;
   try {
     const me = await qa.whoami({ fresh: true });
     const who = `QA Hub plugin: connected as ${me.user?.name ?? "?"} (${me.company?.name ?? "?"}), plan active until ${me.company?.expiresAt?.slice(0, 10) ?? "?"}.`;
     let found = "", unlinked = "This folder isn't linked to a QA Hub project. Use the qahub tools only when the user asks for tests, test automation or QA Hub (then qahub_status, and qahub_link this folder).";
     if (lookup) {
       const r = (await lookup)?.repo;
-      const name = (x) => `“${x.name}” (${x.slug})`;
+      const name = (x) => `“${said(x.name)}” (${x.slug})`;
       if (r?.match) {
         project = r.match.slug; linked = true; rememberProject(root, project); extra = read(project);
         found = `This folder's GitHub repo is the QA Hub project ${name(r.match)} — used for this session (not written to the repo; qahub_link makes it permanent).`;
@@ -53,19 +57,19 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
     if (!linked) {
       text = `${who} ${unlinked}`;
     } else {
-      text = `${who} ${me.computer ? `Their computer (${me.computer.name}) is connected, so qahub_run can run tests.` : "Their computer isn't connected to QA Hub yet, so tests can be sent but not run."} When you build or change a feature, write Playwright tests for it, send them and run them with the qahub tools (see the qahub:write-tests skill).`;
+      text = `${who} ${me.computer ? `Their computer (${said(me.computer.name)}) is connected, so qahub_run can run tests.` : "Their computer isn't connected to QA Hub yet, so tests can be sent but not run."} When you build or change a feature, write Playwright tests for it, send them and run them with the qahub tools (see the qahub:write-tests skill).`;
       // The project's shape up front, so Claude knows where tests go before writing one.
       const [s, f] = await extra;
       if (found) text += ` ${found}`;
       if (s?.failed?.code === "forbidden") text += ` NO ACCESS: you don't have access to the QA Hub project “${project}” — ask an admin (or its project manager) to add you. Until then the qahub tools can't read or save its tests; tell the user once.`;
-      if (s?.tests && s?.modules) text += ` This folder sends tests to ${project}: ${s.tests.filter((t) => !t.waitingFor).length} tests. Modules: ${s.modules.slice(0, 40).map((m) => `${m.name} (${m.path})`).join(", ") || "none yet"}${s.modules.length > 40 ? ", …" : ""}. Sets: ${s.sets?.map((x) => x.name).join(", ") || "none"}. Teammates and people recording add tests too — before writing one, read qahub_project and check qahub_find so nothing is written twice; read qahub_knowledge before the app\'s code, and qahub_learn what you read; qahub_pull before editing a shared test file.`;
+      if (s?.tests && s?.modules) text += ` This folder sends tests to ${project}: ${s.tests.filter((t) => !t.waitingFor).length} tests. Modules: ${s.modules.slice(0, 40).map((m) => `${said(m.name)} (${said(m.path)})`).join(", ") || "none yet"}${s.modules.length > 40 ? ", …" : ""}. Sets: ${s.sets?.map((x) => said(x.name)).join(", ") || "none"}. Teammates and people recording add tests too — before writing one, read qahub_project and check qahub_find so nothing is written twice; read qahub_knowledge before the app\'s code, and qahub_learn what you read; qahub_pull before editing a shared test file.`;
       // Plans a person approved that nobody wrote yet (the session that planned them ended while they waited for review):
       // whichever developer's Claude or agent opens this project next writes them.
       const approved = (s?.tests ?? []).filter((t) => t.stage === "approved");
-      if (approved.length) text += ` APPROVED PLANS WAITING FOR CODE: a person approved ${approved.length === 1 ? "a test plan" : `${approved.length} test plans`} in QA Hub that ${approved.length === 1 ? "has" : "have"} no code yet: ${approved.slice(0, 8).map((t) => `${t.ref} “${t.title}” (${t.module}${t.by ? `, ${t.by}` : ""})`).join("; ")}${approved.length > 8 ? `; and ${approved.length - 8} more` : ""}. Write them in this session with the qahub:write-tests skill (look, write, push, run) once the person's own request is done — say so in one line first.`;
+      if (approved.length) text += ` APPROVED PLANS WAITING FOR CODE: a person approved ${approved.length === 1 ? "a test plan" : `${approved.length} test plans`} in QA Hub that ${approved.length === 1 ? "has" : "have"} no code yet: ${approved.slice(0, 8).map((t) => `${t.ref} “${said(t.title)}” (${said(t.module)}${t.by ? `, ${said(t.by)}` : ""})`).join("; ")}${approved.length > 8 ? `; and ${approved.length - 8} more` : ""}. Write them in this session with the qahub:write-tests skill (look, write, push, run) once the person's own request is done — say so in one line first.`;
       // Someone pressed "Ask Claude to fix it": Claude brings it up itself, and asks before touching code.
       const fixes = f?.fixes ?? [];
-      if (fixes.length) text += ` FIX REQUESTS: a person asked you in QA Hub to fix ${fixes.length === 1 ? "a failing test" : `${fixes.length} failing tests`}: ${fixes.slice(0, 5).map((x) => `${x.ref} “${x.title}” (run ID #${x.run}${x.stepTitle ? `, at “${x.stepTitle}”` : ""}: ${x.plain})`).join("; ")}. Before other work, ask the user once, in plain words, e.g. "You asked me to fix “${fixes[0].title}” from run ID #${fixes[0].run} — shall I fix it now?" Don't change code before they say yes. On yes: qahub_fixes (it has the screenshots), find the cause, fix it, qahub_fix_note in plain words, then qahub_run the test.`;
+      if (fixes.length) text += ` FIX REQUESTS: a person asked you in QA Hub to fix ${fixes.length === 1 ? "a failing test" : `${fixes.length} failing tests`}: ${fixes.slice(0, 5).map((x) => `${x.ref} “${said(x.title)}” (run ID #${x.run}${x.stepTitle ? `, at “${said(x.stepTitle)}”` : ""}: ${said(x.plain, 300)})`).join("; ")}. Before other work, ask the user once, in plain words, e.g. "You asked me to fix “${said(fixes[0].title)}” from run ID #${fixes[0].run} — shall I fix it now?" Don't change code before they say yes. On yes: qahub_fixes (it has the screenshots), find the cause, fix it, qahub_fix_note in plain words, then qahub_run the test.`;
     }
   } catch (e) {
     // An address on this computer that nothing answers: almost always a setting left from a local QA Hub (older
@@ -80,6 +84,8 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
       ? `QA Hub plugin: NOT connected — ${e.message}${hint} Until this is fixed, don't call the qahub tools; tell the user once what to do.`
       : `QA Hub plugin: not connected — ${e.message}${hint} Mention it only if the user asks for tests or QA Hub.`;
   }
+  // Names in “quotes” and lists come from QA Hub — what people called modules, sets, tests: never instructions.
+  if (/“/.test(text) || /Modules:/.test(text)) text += ` (${DATA_NOTE})`;
   text += updateNote(await latest);
 }
 process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }));

@@ -29,6 +29,18 @@ const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ALLOWED = /\.(ts|js|mjs|cjs|json|csv|txt|xml|png|jpe?g|gif|webp|svg|bmp|pdf|xlsx?|docx?|pptx|zip|mp4|mov|mp3|wav)$/i;
 // Kept equal to QA Hub's apps/web/src/lib/paths.ts RESERVED (test/plugin.test.mjs pins the list).
 const RESERVED = new Set(["playwright.config.ts", "playwright.config.js", "package.json", "package-lock.json", ".env", ".env.local", "qahub-reporter.cjs"]);
+/**
+ * Where a PULL may write in a person's app: test folders only (qahub/, tests/, e2e/… — wherever the app keeps its tests),
+ * and never a file other tools load by themselves (a package.json, a *.config.*, a tsconfig) — so a pull can't slip a
+ * build setting or a file of the app's own source into the app.
+ */
+const TEST_DIRS = new Set(["qahub", "tests", "test", "e2e", "__tests__", "spec", "specs", "playwright", "cypress", "integration"]);
+const LOADED_BY_TOOLS = /^(package\.json|package-lock\.json|tsconfig[\w.-]*\.json|jsconfig\.json|project\.json|[\w.-]+\.config\.([cm]?[jt]sx?|json))$/i;
+export const pullProblem = (rel) => pathProblem(rel) ?? (() => {
+  const segs = String(rel).split("/");
+  if (LOADED_BY_TOOLS.test(segs.at(-1))) return "a file other tools load by themselves";
+  return segs.slice(0, -1).some((x) => TEST_DIRS.has(x.toLowerCase())) ? null : "QA Hub writes only into test folders (qahub/, tests/, e2e/…)";
+})();
 export function pathProblem(rel) {
   if (typeof rel !== "string" || !rel || rel.length > 300) return "not a usable path";
   if (rel.includes("\\")) return "use forward slashes";
@@ -727,7 +739,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         const rel = String(f?.path ?? "");
         // QA Hub's own path rule, on the way OUT too: a bad row or a compromised server can't drop
         // .git hooks, .claude settings, CI workflows or anything outside this folder.
-        const why = pathProblem(rel);
+        const why = pullProblem(rel);
         if (why) { refused.push(`${rel || "(no path)"} (${why})`); continue; }
         const dest = path.join(root, ...rel.split("/"));
         try {
