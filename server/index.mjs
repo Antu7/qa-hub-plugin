@@ -339,8 +339,12 @@ export const TOOLS = [
   },
   {
     name: "qahub_fixes",
-    description: "Failing tests a person asked you to fix (\"Ask Claude to fix it\" in QA Hub): each with the step it failed at, the error in plain words and exactly as Playwright said it, what the test is for, and the screenshot of the moment it failed. Read them, find the cause, fix it, then qahub_fix_note and re-run the test.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { project: { type: "string", description: "Leave out to use the linked project" } } },
+    description: "Failing tests a person asked you to fix: each with the step it failed at, the error in plain words and exactly as Playwright said it, what the test is for, and the screenshot of the moment it failed. Read them, find the cause, fix it, then qahub_fix_note and re-run the test. A person pasted QA Hub's \"Copy for Claude\"? Pass its test and run: you take that failure (nobody else's Claude is offered it) and get it the same way.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      project: { type: "string", description: "Leave out to use the linked project" },
+      test: { type: "string", description: "From a pasted \"Copy for Claude\": the test's ref, e.g. TEST-00005 (with run)" },
+      run: { type: "integer", minimum: 1, description: "From a pasted \"Copy for Claude\": the run it failed in (with test)" },
+    } },
   },
   {
     name: "qahub_fix_note",
@@ -837,11 +841,17 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (run !== undefined && !(Number.isInteger(run) && run > 0)) throw new QaHubError("run is a run number, like 12");
       return follow(p, run ?? "latest", wait);
     },
-    async qahub_fixes({ project } = {}) {
+    async qahub_fixes({ project, test, run } = {}) {
       await qa.whoami();
       const p = projectOf(project);
-      const { fixes } = await qa.call("GET", `/api/v1/projects/${p}/fixes`, undefined, { timeout: SLOW });
-      if (!fixes?.length) return "No fix requests waiting in QA Hub.";
+      if ((test === undefined) !== (run === undefined)) throw new QaHubError("Give test and run together (they're in what QA Hub's Copy for Claude copied), or neither for every fix request");
+      if (test !== undefined && !/^TEST-\d{1,9}$/.test(test)) throw new QaHubError("test is a ref like TEST-00005");
+      if (run !== undefined && !(Number.isInteger(run) && run > 0)) throw new QaHubError("run is a run number, like 12");
+      // A pasted "Copy for Claude": take that failure — it becomes a fix request held by this developer, then reads like any other.
+      const got = test ? await qa.call("POST", `/api/v1/projects/${p}/fixes`, { test, run }, { timeout: SLOW }) : await qa.call("GET", `/api/v1/projects/${p}/fixes`, undefined, { timeout: SLOW });
+      if (got.takenBy) return `${got.takenBy.name}'s Claude already took ${test} from run ID #${run} (${got.takenBy.at}). Tell the user, and check with ${got.takenBy.name} before fixing it too.`;
+      const { fixes } = got;
+      if (!fixes?.length) return test ? `${test} has nothing to fix from run ID #${run}.` : "No fix requests waiting in QA Hub.";
       // Text Claude reads, and each failure's screenshot as an image it can see.
       const content = [{ type: "text", text: `${fixes.length} failing test${fixes.length === 1 ? "" : "s"} a person asked you to fix. For each: find the cause — the app (a bug: fix the app) or the test (the app changed on purpose: update the test). Never make it pass by checking less or waiting longer. Then qahub_fix_note in plain words, push the test if you changed it, and qahub_run { tests: [its ref] }.` }];
       for (const f of fixes) {

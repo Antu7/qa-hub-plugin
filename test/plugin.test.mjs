@@ -22,6 +22,7 @@ const started = [];
 const keys = []; // the Idempotency-Key of each run-start try
 let polls = 0, blips = 0;
 const notes = [];
+const claims = [];
 const learned = [];
 const saves = []; // knowledge others saved: { module, topics, at }
 const pulls = []; // each qahub_pull's query: ?branch= on a feature branch
@@ -95,6 +96,7 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/projects/freight/look" && req.method === "POST") { const body = JSON.parse(b); return body.path === "/broken"
       ? out(200, { status: "failed", error: "Couldn't open /broken. Is your app running?" })
       : out(200, { status: "done", look: { url: `http://localhost:5174${body.path}`, title: "Quotes", snapshot: '- heading "Quotes" [level=1]\n- button "New quote"', shot: PNG.toString("base64"), errors: ["TypeError: x is undefined"] } }); }
+    if (u.pathname === "/api/v1/projects/freight/fixes" && req.method === "POST") { const c = JSON.parse(b); claims.push(c); if (c.test === "TEST-00009") return out(200, { fixes: [], takenBy: { name: "Ana", at: "2026-11-06T10:42:00Z" } }); }
     if (u.pathname === "/api/v1/projects/freight/fixes") return out(200, { fixes: [{ ref: "TEST-00005", title: "Cancelling Create training saves nothing", file: "tests/training.spec.ts", steps: ["Open Create training, type a title and press Cancel", "Open Create training again"],
       run: 8, askedBy: "Alex", step: 1, stepTitle: "Open Create training again", attempt: 1, failKind: null, url: "/p/freight/runs/8",
       plain: "The “Title” box in the “Create training” dialog should have been empty, but it still said “QA Cancel 1”.", technical: "expect(locator).toHaveValue(expected) failed",
@@ -780,6 +782,18 @@ test("Ask Claude to fix it: Claude brings it up at session start, asks first, se
   inp.write(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "qahub_fixes", arguments: {} } }) + "\n");
   for (let i = 0; i < 50 && !lines.some((x) => x.id === 9); i++) await new Promise((r) => setTimeout(r, 20));
   assert.ok(lines.find((x) => x.id === 9).result.content.some((c) => c.type === "image"));
+});
+
+test("a pasted Copy for Claude: qahub_fixes { test, run } takes that failure and reads it like any fix request — or says who has it", async () => {
+  const t = as("qh_good");
+  await t.qahub_link({ project: "freight" });
+  const got = await t.qahub_fixes({ test: "TEST-00005", run: 8 });
+  assert.deepEqual(claims.at(-1), { test: "TEST-00005", run: 8 });
+  assert.match(got.content.map((c) => c.text ?? "").join("\n"), /TEST-00005[\s\S]*What went wrong: The “Title” box/);
+  assert.ok(got.content.some((c) => c.type === "image"));
+  assert.match(await t.qahub_fixes({ test: "TEST-00009", run: 8 }), /Ana's Claude already took TEST-00009 from run ID #8[\s\S]*check with Ana before fixing it too/);
+  await assert.rejects(t.qahub_fixes({ test: "TEST-00005" }), /test and run together/);
+  await assert.rejects(t.qahub_fixes({ test: "five", run: 8 }), /ref like TEST-00005/);
 });
 
 test("a run QA Hub says was already started (Claude retrying after a timeout) is followed, not reported as new", async () => {
