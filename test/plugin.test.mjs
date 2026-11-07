@@ -1306,6 +1306,17 @@ test("a bare 404 or 503 (QA Hub restarting) is tried once more, and said as it i
   assert.equal(pushes, 1, "a write is not sent again after a gateway error");
 });
 
+test("Eclipse on Grok (QAHUB_AGENT=grok): every call says so (X-QAHub-Agent), so QA Hub names what it writes Grok's; otherwise nothing extra", async () => {
+  const { client } = await import("../server/qahub.mjs");
+  const sent = [];
+  const c = client({ key: "qh_live_test", server: "http://localhost:3100", fetchImpl: async (_u, o) => { sent.push(o.headers); return { ok: true, status: 200, text: async () => "{}" }; } });
+  await c.call("POST", "/api/v1/projects/x/tests", { tests: [] });
+  process.env.QAHUB_AGENT = "grok";
+  try { await c.call("POST", "/api/v1/projects/x/tests", { tests: [] }); } finally { delete process.env.QAHUB_AGENT; }
+  assert.equal(sent[0]["X-QAHub-Agent"], undefined);
+  assert.equal(sent[1]["X-QAHub-Agent"], "grok");
+});
+
 test("keep going never extends another hook's send-back, and never runs in the recorder chat (it has its own loop)", async () => {
   const { keepGoing } = await import("../hooks/keep-going.mjs");
   const left = { waiting: [], write: [{ ref: "TEST-00006", title: "Hazardous SDS" }], fix: [] };

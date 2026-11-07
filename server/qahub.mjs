@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.68";
+export const VERSION = "0.7.69";
 /**
  * Text from QA Hub put into Claude's context (a module's name, a test's title, a person's note): one line, capped — it
  * can't start a new paragraph that reads like an instruction. DATA_NOTE says, beside it, what it is.
@@ -74,7 +74,8 @@ export function client({ key = process.env.QAHUB_KEY, server = process.env.QAHUB
     try {
       res = await fetchImpl(origin + path, {
         method,
-        headers: { ...headers, Authorization: `Bearer ${key}`, "User-Agent": `qahub-claude-plugin/${VERSION}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+        // Eclipse on Grok (Hydra sets QAHUB_AGENT): what it writes is named Grok's, not Claude's.
+        headers: { ...headers, Authorization: `Bearer ${key}`, "User-Agent": `qahub-claude-plugin/${VERSION}`, ...(process.env.QAHUB_AGENT === "grok" ? { "X-QAHub-Agent": "grok" } : {}), ...(body ? { "Content-Type": "application/json" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         redirect: "error",
         signal: AbortSignal.timeout(timeout),
