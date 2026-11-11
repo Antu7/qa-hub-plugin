@@ -1248,7 +1248,7 @@ test("knowledge: the recorder chat's tools count from QAHUB_KNOWLEDGE_SINCE, not
   saves.length = 0;
 });
 
-test("the recorder chat saves only tried tests: passed once with this exact code, or marked a known app bug; QA Hub's own credit still needs two passes", async () => {
+test("the recorder chat saves only tried tests: passed twice in a row with this exact code, or failed on a check and marked a known app bug", async () => {
   const { createHash } = await import("node:crypto");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qh-app-"));
   fs.mkdirSync(path.join(dir, "qahub"), { recursive: true });
@@ -1258,13 +1258,18 @@ test("the recorder chat saves only tried tests: passed once with this exact code
   const shaOf = (src, title) => createHash("sha1").update(proofText(src, title)).digest("hex");
   // The proof lives in the project's own folder (~/qa_hub/<project>/.qahub/proof.json).
   fs.mkdirSync(path.join(dir, ".qahub"), { recursive: true });
-  fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code, "A"), streak: 2 }, "qahub/a.spec.ts#B": { sha: shaOf(code, "B"), streak: 1 }, "qahub/a.spec.ts#D": { sha: shaOf(code, "D"), streak: 0 } }));
+  fs.writeFileSync(path.join(dir, ".qahub", "proof.json"), JSON.stringify({ "qahub/a.spec.ts#A": { sha: shaOf(code, "A"), streak: 2 }, "qahub/a.spec.ts#B": { sha: shaOf(code, "B"), streak: 1 }, "qahub/a.spec.ts#D": { sha: shaOf(code, "D"), streak: 0, failKind: "bug" }, "qahub/a.spec.ts#E": { sha: shaOf(code, "E"), streak: 0, failKind: "missing" } }));
   const t = (title, extra = {}) => ({ file: "qahub/a.spec.ts", title, ...extra });
-  assert.deepEqual(unprovenTests(dir, [t("A"), t("B")]), [], "one passing try is enough to push from the recorder chat");
+  assert.deepEqual(unprovenTests(dir, [t("A")]), [], "passed twice in a row");
+  assert.deepEqual(unprovenTests(dir, [t("B")]), [{ title: "B", why: "passed once, not twice" }], "one pass is not enough: a flaky test reached review as passed (2026-11-11 review)");
   assert.deepEqual(provenTests(dir, [t("A"), t("B")]), ["qahub/a.spec.ts#A"], "QA Hub's own 'proven' credit still needs two passes");
   assert.deepEqual(unprovenTests(dir, [t("D")]), [{ title: "D", why: "its last try failed" }]);
   assert.deepEqual(unprovenTests(dir, [t("C")]), [{ title: "C", why: "never tried" }]);
-  assert.deepEqual(unprovenTests(dir, [t("B", { knownBug: "the app accepts a bad email" })]), []);
+  // A known bug: its last try of this code failed on a check — never one that passed, was never tried, or failed finding an element.
+  assert.deepEqual(unprovenTests(dir, [t("D", { knownBug: "the app accepts a bad email" })]), []);
+  assert.match(unprovenTests(dir, [t("E", { knownBug: "Save is missing" })])[0].why, /failed finding an element — not a check/);
+  assert.match(unprovenTests(dir, [t("B", { knownBug: "x" })])[0].why, /its last try passed/);
+  assert.match(unprovenTests(dir, [t("C", { knownBug: "x" })])[0].why, /never tried/);
   // A bug is said as a finding that waits for approval — never "Needs you", which parks the chat until the person answers.
   const { TOOLS } = await import("../server/index.mjs");
   const kb = TOOLS.find((x) => x.name === "qahub_push").inputSchema.properties.tests.items.properties.knownBug.description;
@@ -1383,7 +1388,7 @@ test("keep going sends back only on progress: a qahub tool called since the last
   assert.equal(await keepGoingCheck({ cwd: root }, "", path.join(root, "other.json"), { ...env, CLAUDE_PLUGIN_OPTION_API_KEY: "qh_nopc" }), null, "no computer: nothing to prove");
 });
 
-test("push from the recorder chat: a test that passed once is saved and the chat isn't sent to run it again", async () => {
+test("push from the recorder chat: a test that passed only once is not sent — it tries again, twice in a row (2026-11-11 review: flaky tests reached review as passed)", async () => {
   const { createHash } = await import("node:crypto");
   const { proofText } = await import("../server/index.mjs");
   const t = as("qh_good");
@@ -1394,11 +1399,10 @@ test("push from the recorder chat: a test that passed once is saved and the chat
   fs.writeFileSync(path.join(app, ".qahub", "proof.json"), JSON.stringify({ "tests/quotes.spec.ts#Save a quote": { sha: createHash("sha1").update(proofText(code, "Save a quote")).digest("hex"), streak: 1 } }));
   process.env.QAHUB_CHAT = "1";
   try {
-    const sent = await t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] });
-    assert.match(sent, /Sent to QA Hub/);
-    assert.ok(!("proven" in pushed.at(-1)), "one pass isn't QA Hub's credit");
-    assert.doesNotMatch(sent, /qahub_run|Run (them|the rest) now/, "the chat is done once it saved");
-    assert.match(sent, /counts? (it|them) once QA Hub's runs pass/);
+    const before = pushed.length;
+    await assert.rejects(t.qahub_push({ files: ["tests/quotes.spec.ts"], tests: [{ file: "tests/quotes.spec.ts", title: "Save a quote", module: "Quotes", steps: ["Open Quotes"] }] }),
+      /Not proven yet: “Save a quote” \(passed once, not twice\)\. Try it with try_tests \(repeat: 2\)[\s\S]*Nothing was sent/);
+    assert.equal(pushed.length, before, "nothing sent");
   } finally {
     delete process.env.QAHUB_CHAT;
     fs.rmSync(path.join(app, ".qahub"), { recursive: true, force: true });

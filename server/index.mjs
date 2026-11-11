@@ -933,12 +933,12 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       // Every new test lands in a real module: QA Hub refuses one whose module it lacks (strictModules), naming its modules.
       // Passed twice on this computer with this exact code (try_tests): QA Hub counts them verified — no run of its own.
       const proven = provenTests(root(), tests);
-      // The recorder chat saves only what was tried: each test passed in try_tests with its code exactly as sent — or is
-      // marked a known app bug (tagged, so the person sees it). Refused here, before anything is sent. One pass is
-      // enough to save; QA Hub's own credit (above) still needs two.
+      // The recorder chat saves only what was tried: each test passed twice in a row in try_tests with its code exactly as
+      // sent — or failed its last try on a check and is marked a known app bug (tagged, so the person sees it). Refused
+      // here, before anything is sent (unprovenTests).
       if (process.env.QAHUB_CHAT && tests.length) {
         const unproven = unprovenTests(root(), tests);
-        if (unproven.length) throw new QaHubError(`Not proven yet: ${unproven.map((t) => `“${t.title}” (${t.why})`).join("; ")}. Try ${unproven.length === 1 ? "it" : "them"} with try_tests until ${unproven.length === 1 ? "it passes" : "they pass"} with this exact code — or, if one fails only because the APP is wrong, keep the right check and push it now with knownBug: "<what's wrong>" and say "Bug found: …" — it waits for the person's approval. Nothing was sent.`);
+        if (unproven.length) throw new QaHubError(`Not proven yet: ${unproven.map((t) => `“${t.title}” (${t.why})`).join("; ")}. Try ${unproven.length === 1 ? "it" : "them"} with try_tests (repeat: 2) until ${unproven.length === 1 ? "it passes" : "they pass"} twice in a row with this exact code — or, if one fails on a CHECK only because the APP is wrong, keep the right check and push it now with knownBug: "<what's wrong>" and say "Bug found: …" — it waits for the person's approval. Nothing was sent.`);
         for (const t of tests) if (t.knownBug) {
           t.tags = [...new Set([...(t.tags ?? []), "known-bug"])];
           t.description = `Known bug: ${String(t.knownBug).trim()}${t.description ? ` — ${t.description}` : ""}`.slice(0, 600);
@@ -1036,9 +1036,26 @@ function helpersOf(src, file, read) {
   return out;
 }
 
+/**
+ * The recorder chat's tests a push can't send yet: each must have passed twice in a row with its code exactly as sent — one
+ * pass let a flaky test reach review as "✓ passed" (2026-11-11 review). A test marked knownBug must have FAILED its last
+ * try of this exact code on a check (failKind "bug": the app did the wrong thing) — a wrong locator or a wait that ran out
+ * is the test's own problem, and three of those in a row became a false "Bug found" (same review).
+ */
 export function unprovenTests(root, tests) {
   const proof = proofOf(root);
-  return tests.filter((t) => !t.knownBug).map((t) => ({ title: t.title, why: notProven(root, proof, t, 1) })).filter((x) => x.why);
+  return tests.map((t) => ({ title: t.title, why: t.knownBug ? notABug(root, proof, t) : notProven(root, proof, t, 2) })).filter((x) => x.why);
+}
+
+/** Why a test marked knownBug isn't shown to be one, or null: its last try of this code failed on a check. */
+function notABug(root, proof, t) {
+  const p = proof[`${t.file}#${t.title}`];
+  const why = notProven(root, proof, t, 1);
+  if (why === "never tried") return "marked a known bug, but never tried";
+  if (why === "its code, or a helper it imports, changed since it last passed") return "marked a known bug, but its code changed since the try that failed — try it again";
+  if (p.streak > 0) return "marked a known bug, but its last try passed";
+  if (p.failKind === undefined) return "marked a known bug, but this computer's Hydra doesn't say how it failed — update Hydra (1.7.0+) and try it again";
+  return p.failKind === "bug" ? null : `marked a known bug, but its last try failed ${p.failKind === "missing" ? "finding an element" : "before it could check anything"} — not a check seeing the app do the wrong thing. That's the test's own problem: fix it`;
 }
 
 /** "file#title" of each test in a push that passed twice on this computer with its code as sent: QA Hub credits them. */
