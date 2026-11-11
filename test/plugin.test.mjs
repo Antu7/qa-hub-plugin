@@ -170,6 +170,29 @@ const checkout = (branch) => {
   return { dir, git };
 };
 
+// 2026-11-11: a developer's Claude worked in a git worktree (PH-2575) while Claude Code — and so these tools — had started in
+// the main checkout (feat/ph-1089-imports): the push would have read the main checkout's files and branch. A call that names
+// the folder Claude works in uses that folder — when it is this app's repository (a worktree of it, or a folder inside it).
+test("a push from a worktree sends the worktree's files and branch; a folder of another repository is refused", async () => {
+  const { dir, git } = checkout("feat/ph-1089-imports");
+  const tree = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-tree-")), "ph-2575");
+  const other = checkout("main");
+  try {
+    git("worktree", "add", "-q", "-b", "PH-2575", tree);
+    fs.writeFileSync(path.join(tree, "tests/ledger.spec.ts"), "import { test } from '@playwright/test';\n// only in the worktree\n");
+    const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base }, dir, fetch, { pollMs: 10, waitMs: 3_000 });
+    await t.qahub_push({ folder: tree, files: ["tests/ledger.spec.ts"], tests: [{ file: "tests/ledger.spec.ts", title: "Add a bank account", module: "Quotes", steps: ["Open Ledger settings"] }] });
+    assert.equal(pushed.at(-1).branch, "PH-2575", "the worktree's branch, not the main checkout's");
+    assert.match(pushed.at(-1).files[0].content, /only in the worktree/);
+    await t.qahub_push({ files: ["tests/quotes.spec.ts"] }); // no folder: where Claude Code started, as before
+    assert.equal(pushed.at(-1).branch, "feat/ph-1089-imports");
+    await assert.rejects(t.qahub_push({ folder: other.dir, files: ["tests/quotes.spec.ts"] }), /isn't this app's repository/);
+    await assert.rejects(t.qahub_push({ folder: "relative/path", files: ["tests/quotes.spec.ts"] }), /full path/);
+  } finally {
+    for (const d of [dir, path.dirname(tree), other.dir]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test("push sends the checkout's branch, says it is waiting, and qahub_learn sends the branch too", async () => {
   const { dir } = checkout("feature-x");
   try {
@@ -1543,4 +1566,26 @@ test("a pull writes only into test folders, never a file other tools load by the
   const { pullProblem } = await import("../server/index.mjs");
   for (const ok of ["qahub/orders/create.spec.ts", "tests/helpers/nav.ts", "e2e/fixtures/photo.png", "apps/web/tests/x.spec.ts"]) assert.equal(pullProblem(ok), null, ok);
   for (const bad of ["vite.config.ts", "tests/vitest.config.mjs", "qahub/package.json", "tests/tsconfig.json", "src/index.ts", "src/app.test.ts", "next.config.js", "apps/web/project.json"]) assert.ok(pullProblem(bad), bad);
+});
+
+test("a QA Hub call from a worktree that doesn't name it is turned back with the folder to pass; elsewhere nothing changes", async () => {
+  const { folderCheck } = await import("../hooks/folder-check.mjs");
+  const { dir, git } = checkout("feat/ph-1089-imports");
+  const tree = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-tree-")), "ph-2575");
+  const other = checkout("main");
+  try {
+    git("worktree", "add", "-q", "-b", "PH-2575", tree);
+    const env = { CLAUDE_PROJECT_DIR: dir };
+    const call = (cwd, tool_input = {}) => folderCheck({ cwd, tool_name: "mcp__plugin_qahub_qahub__qahub_push", tool_input }, env);
+    const back = call(tree);
+    assert.equal(back.hookSpecificOutput.permissionDecision, "deny", "turned back, never allowed past a prompt");
+    assert.match(back.hookSpecificOutput.permissionDecisionReason, new RegExp(`qahub_push again with folder: ${JSON.stringify(tree).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.equal(call(tree, { folder: tree }), null, "naming the folder goes through");
+    assert.equal(call(dir), null, "where Claude Code started: as before");
+    assert.equal(call(path.join(dir, "tests")), null, "a folder inside the same checkout: as before");
+    assert.equal(call(other.dir), null, "another repository: the tools keep their own folder, nothing refused");
+    assert.equal(folderCheck({ cwd: tree, tool_input: {} }, {}), null, "no CLAUDE_PROJECT_DIR: nothing to compare with");
+  } finally {
+    for (const d of [dir, path.dirname(tree), other.dir]) fs.rmSync(d, { recursive: true, force: true });
+  }
 });

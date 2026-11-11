@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { client, gitBranch, isMain, QaHubError, VERSION } from "./qahub.mjs";
 
 const LINK_FILE = "qahub.json"; // in the app's repository: { "project": "<slug>" }
@@ -372,6 +373,10 @@ export const TOOLS = [
     },
   },
 ];
+// Every tool takes the folder Claude works in: Claude Code may have started in the main checkout while Claude works in a
+// worktree (hooks/folder-check.mjs refuses a call made from elsewhere without it).
+const FOLDER = { type: "string", description: "The full path of the folder you're working in (your current working directory) when it isn't where Claude Code started — e.g. a git worktree of this app. Its files and branch are used." };
+for (const t of TOOLS) t.inputSchema.properties.folder = FOLDER;
 
 const KIND = { bug: "the app broke", missing: "something on the page changed — check whether the app or the test is right", blocked: "a captcha or bot wall stopped it (not a bug)",
   setup: "a step couldn't be done (covered, hidden, disabled, a page that didn't open), so the test never reached its checks — find what got in the way before calling it a bug" };
@@ -517,9 +522,37 @@ export function describeDesign(d) {
 // When this session started (this process): knowledge saved after it is news to the Claude that read it at the start.
 const SESSION_START = new Date(Date.now() - process.uptime() * 1000);
 
+/** Each tool, given `folder`, runs with that folder as its app root (checked by `pick`); `folder` itself never reaches the tool. */
+function withFolder(here, pick, impl) {
+  return Object.fromEntries(Object.entries(impl).map(([name, fn]) => [name, async (args) => {
+    const { folder, ...rest } = args ?? {};
+    return folder === undefined || folder === null || folder === "" ? fn(rest) : here.run(pick(folder), () => fn(rest));
+  }]));
+}
+
+/** The repository a folder belongs to (its common .git, shared by every worktree), or null when it isn't one. */
+export function gitCommon(dir) {
+  try {
+    const out = execFileSync("git", ["-C", dir, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return fs.realpathSync.native(path.resolve(dir, out));
+  } catch { return null; }
+}
+
 export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch, { pollMs = 3_000, waitMs = 5 * 60_000, reviewMs = 8_000, sessionStart = SESSION_START } = {}) {
   const qa = client({ key: env.QAHUB_KEY, server: env.QAHUB_SERVER, fetchImpl });
-  const root = appRoot(cwd);
+  // Where Claude Code started — and, for one call, the folder Claude works in when it says so (`folder`: a git worktree
+  // of this app, or a folder inside it, 2026-11-11): its files, branch and link, never the main checkout's.
+  const home = appRoot(cwd);
+  const here = new AsyncLocalStorage();
+  const root = () => here.getStore() ?? home;
+  const folderRoot = (folder) => {
+    if (typeof folder !== "string" || !path.isAbsolute(folder)) throw new QaHubError("folder is the full path of the folder you're working in (your current working directory).");
+    if (!fs.existsSync(folder)) throw new QaHubError(`${folder} doesn't exist.`);
+    const r = appRoot(folder);
+    const real = (d) => { try { return fs.realpathSync.native(d); } catch { return path.resolve(d); } };
+    if (inside(real(home), real(r)) || (gitCommon(r) && gitCommon(r) === gitCommon(home))) return r;
+    throw new QaHubError(`${folder} isn't this app's repository (${home}) — only a git worktree of it, or a folder inside it, can be used.`);
+  };
   // Per project: saves after this were not told yet. Each is told once — then `since` moves past it.
   // The recorder chat relaunches these tools for every answer: it says since when (QAHUB_KNOWLEDGE_SINCE, chat.mjs).
   const start = Number.isNaN(Date.parse(env.QAHUB_KNOWLEDGE_SINCE ?? "")) ? sessionStart : new Date(env.QAHUB_KNOWLEDGE_SINCE);
@@ -537,7 +570,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
   // ponytail: a second, cheap call (an older QA Hub ignores only=updated and answers with the index — no notice then).
   const newsOf = async (p) => notice(p, (await qa.call("GET", `/api/v1/projects/${p}/knowledge?since=${sinceOf(p)}&only=updated`).catch(() => null))?.updated);
   const projectOf = (arg) => {
-    const p = arg ?? projectAt(root);
+    const p = arg ?? projectAt(root()) ?? projectAt(home);
     if (!p) throw new QaHubError("This app folder isn't linked to a QA Hub project yet. Ask which project it is (qahub_status lists them), then call qahub_link.");
     if (!SLUG.test(p)) throw new QaHubError(`“${p}” isn't a QA Hub project name (lowercase letters, digits and dashes).`);
     return p;
@@ -567,11 +600,11 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await new Promise((r) => setTimeout(r, pollMs));
     }
   };
-  return {
+  return withFolder(here, folderRoot, {
     async qahub_status() {
       const me = await qa.whoami({ fresh: true });
       const { projects } = await qa.call("GET", "/api/v1/projects");
-      const linked = projectAt(root);
+      const linked = projectAt(root());
       const summary = linked && projects.some((x) => x.slug === linked) ? await qa.call("GET", `/api/v1/projects/${linked}`).catch(() => null) : null;
       return [
         `Connected to QA Hub (${qa.origin()}) as ${me.user?.name ?? "?"} <${me.user?.email ?? "?"}> — ${me.company?.name ?? "your company"}, role ${me.role}.`,
@@ -579,7 +612,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         me.computer ? `Your computer: ${me.computer.name} (qahub ${me.computer.version}) — connected, so qahub_run can run tests.`
           : `Your computer isn't connected, so tests can't run yet: in QA Hub open Computers and run the connect command it shows (in a terminal on the computer where the app runs).`,
         `Projects: ${projects.map((p) => `${p.slug} (${p.name})`).join(", ") || "none yet — create one in QA Hub"}.`,
-        linked ? `This folder ${linkedProject(root) ? "is linked to" : "is GitHub's repo of"}: ${linked}.` : "This folder isn't linked to a project yet (qahub_link).",
+        linked ? `This folder ${linkedProject(root()) ? "is linked to" : "is GitHub's repo of"}: ${linked}.` : "This folder isn't linked to a project yet (qahub_link).",
         ...(summary ? [`Environments: ${summary.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}. Tests in QA Hub: ${summary.tests.filter((t) => !t.waitingFor).length}.`] : []),
       ].join("\n");
     },
@@ -599,7 +632,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const p = projectOf(project);
       const res = await qa.call("POST", `/api/v1/projects/${p}/plan`, { ...(behaviours.length ? { behaviours } : {}), tests });
       // Each test case's stage says whether it waits for a person (high-priority and risky ones, by default).
-      building(root, [...res.planned, ...(res.updated ?? [])].map((x) => x.ref));
+      building(root(), [...res.planned, ...(res.updated ?? [])].map((x) => x.ref));
       const waiting = res.planned.filter((x) => x.stage === "planned").length;
       const ready = res.planned.length - waiting;
       const lines = [];
@@ -691,13 +724,13 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (add && body !== undefined) throw new QaHubError("Send add or body, not both: add for your new facts (merged in), body to replace the whole topic.");
       // New lines only: QA Hub merges them into whatever version is there — no basedOn, nothing to clobber.
       if (add) {
-        const branch = gitBranch(root);
+        const branch = gitBranch(root());
         await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, add, files: files ?? [], ...(sha ? { sha } : {}), ...(branch ? { branch } : {}) });
         return `Added to “${topic}” — every teammate's Claude reads it now.`;
       }
       // basedOn: the version this session read ("new" if it never read it — then it must not exist yet). Recorded on
       // reads only, so after any save — another helper's, or this one's — the topic is read again before the next save.
-      const branch = gitBranch(root); // a feature branch's knowledge waits for the feature, like its tests
+      const branch = gitBranch(root()); // a feature branch's knowledge waits for the feature, like its tests
       await qa.call("PUT", `/api/v1/projects/${p}/knowledge`, { topic, body, files: files ?? [], ...(sha ? { sha } : {}), ...(branch ? { branch } : {}), basedOn: readAt.get(`${p}\n${String(topic).toLowerCase()}`) ?? "new" });
       return `Saved “${topic}” — every teammate's Claude reads it now instead of the code.`;
     },
@@ -732,9 +765,9 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       await qa.whoami();
       const p = projectOf(project);
       // From a feature branch: that branch's own versions, as its push is checked against them (base for the rest).
-      const branch = gitBranch(root);
+      const branch = gitBranch(root());
       const { files } = await qa.call("GET", `/api/v1/projects/${p}/files?content=1${branch ? `&branch=${encodeURIComponent(branch)}` : ""}`, undefined, { timeout: SLOW });
-      const realRoot = fs.realpathSync(root);
+      const realRoot = fs.realpathSync(root());
       const titles = (src) => [...String(src).matchAll(/\btest(?:\.(?:only|skip|fixme))?\(\s*(["'`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2]);
       const eol = (x) => x.replace(/\r\n/g, "\n"); // a Windows checkout's line endings aren't a difference
       const added = [], replaced = [], same = [], differs = [], refused = [];
@@ -745,7 +778,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         // .git hooks, .claude settings, CI workflows or anything outside this folder.
         const why = pullProblem(rel);
         if (why) { refused.push(`${rel || "(no path)"} (${why})`); continue; }
-        const dest = path.join(root, ...rel.split("/"));
+        const dest = path.join(root(), ...rel.split("/"));
         try {
           let d = path.dirname(dest);
           while (!fs.existsSync(d)) d = path.dirname(d);
@@ -771,7 +804,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           differs.push(`${rel}${theirs.length ? ` — QA Hub's copy also has ${theirs.map((x) => `“${x}”`).join(", ")}` : ""}`);
         } catch (e) { refused.push(`${rel} (couldn't write it: ${e.code ?? e.message})`); }
       }
-      bases(root, got);
+      bases(root(), got);
       return [
         `QA Hub's test files for ${p}: ${files.length}.`,
         ...(added.length ? [`Added: ${added.join(", ")}.`] : []),
@@ -793,13 +826,13 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       }
       // A checkout of another app linked here would read and teach the wrong project: its GitHub repo must be one of the
       // project's. Not a git checkout, or a project with no repo linked: nothing to compare.
-      const mine = gitRepos(root);
+      const mine = gitRepos(root());
       if (mine.length && !force) {
         const theirs = ((await qa.call("GET", `/api/v1/projects/${p}`)).repos ?? []).map((r) => repoName(typeof r === "string" ? r : r?.repo)).filter(Boolean);
         if (theirs.length && !theirs.some((r) => mine.includes(r))) throw new QaHubError(`This folder is ${mine.join(", ")} on GitHub, but the QA Hub project “${p}” is linked to ${theirs.join(", ")} — so it's probably not this app's project. Ask the user which project it is; only if they say “${p}” is right, call qahub_link again with force: true.`);
       }
-      fs.writeFileSync(path.join(root, LINK_FILE), JSON.stringify({ project: p }, null, 2) + "\n");
-      return `Linked ${root} to the QA Hub project “${p}” (${LINK_FILE} — commit it so teammates share the link; it holds no secret).`;
+      fs.writeFileSync(path.join(root(), LINK_FILE), JSON.stringify({ project: p }, null, 2) + "\n");
+      return `Linked ${root()} to the QA Hub project “${p}” (${LINK_FILE} — commit it so teammates share the link; it holds no secret).`;
     },
     async qahub_gaps({ project } = {}) {
       await qa.whoami();
@@ -899,12 +932,12 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       const tests = given.map((t) => (typeof t?.file === "string" ? { ...t, file: t.file.replaceAll("\\", "/") } : t)); // a Windows path
       // Every new test lands in a real module: QA Hub refuses one whose module it lacks (strictModules), naming its modules.
       // Passed twice on this computer with this exact code (try_tests): QA Hub counts them verified — no run of its own.
-      const proven = provenTests(root, tests);
+      const proven = provenTests(root(), tests);
       // The recorder chat saves only what was tried: each test passed in try_tests with its code exactly as sent — or is
       // marked a known app bug (tagged, so the person sees it). Refused here, before anything is sent. One pass is
       // enough to save; QA Hub's own credit (above) still needs two.
       if (process.env.QAHUB_CHAT && tests.length) {
-        const unproven = unprovenTests(root, tests);
+        const unproven = unprovenTests(root(), tests);
         if (unproven.length) throw new QaHubError(`Not proven yet: ${unproven.map((t) => `“${t.title}” (${t.why})`).join("; ")}. Try ${unproven.length === 1 ? "it" : "them"} with try_tests until ${unproven.length === 1 ? "it passes" : "they pass"} with this exact code — or, if one fails only because the APP is wrong, keep the right check and push it now with knownBug: "<what's wrong>" and say "Bug found: …" — it waits for the person's approval. Nothing was sent.`);
         for (const t of tests) if (t.knownBug) {
           t.tags = [...new Set([...(t.tags ?? []), "known-bug"])];
@@ -912,10 +945,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
           delete t.knownBug;
         }
       }
-      const branch = gitBranch(root); // on a feature branch QA Hub keeps this push waiting until the feature reaches each place
+      const branch = gitBranch(root()); // on a feature branch QA Hub keeps this push waiting until the feature reaches each place
       // Each file's base: QA Hub's sha of the copy the edit here started from — a shared helper a teammate changed since is refused.
-      const base = bases(root);
-      const body = { files: files.map((f) => readAppFile(root, f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, strictModules: true, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(expectChanged ? { expectChanged } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}), ...(branch ? { branch } : {}) };
+      const base = bases(root());
+      const body = { files: files.map((f) => readAppFile(root(), f)).map((x) => (SHA256.test(base[x.path] ?? "") ? { ...x, base: base[x.path] } : x)), tests, modules, strictModules: true, ...(proven.length ? { proven } : {}), ...(remove.length ? { remove } : {}), ...(behaviours.length ? { behaviours } : {}), ...(variables.length ? { variables } : {}), ...(labels.length ? { labels } : {}), ...(fewerChecks ? { fewerChecks } : {}), ...(expectChanged ? { expectChanged } : {}), ...(process.env.QAHUB_CHAT ? { chat: true } : {}), ...(branch ? { branch } : {}) };
       const size = Buffer.byteLength(JSON.stringify(body));
       if (size > MAX_PUSH) throw new QaHubError(`This push is ${Math.round(size / 1048576)} MB; QA Hub takes up to 30 MB at once. Send the files a test uploads in smaller pushes (a few at a time). Nothing was sent.`);
       const res = await qa.call("POST", `/api/v1/projects/${p}/tests`, body, { timeout: SLOW }).catch((e) => {
@@ -923,8 +956,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         throw e;
       });
       const refs = res?.refs ?? [];
-      building(root, refs.map((r) => r.ref));
-      bases(root, Object.fromEntries(body.files.map((x) => [x.path, sha256(x.base64 !== undefined ? Buffer.from(x.base64, "base64") : x.content)]))); // QA Hub has these now
+      building(root(), refs.map((r) => r.ref));
+      bases(root(), Object.fromEntries(body.files.map((x) => [x.path, sha256(x.base64 !== undefined ? Buffer.from(x.base64, "base64") : x.content)]))); // QA Hub has these now
       const credited = Array.isArray(res?.credited) ? refs.filter((r) => res.credited.includes(r.ref)) : [];
       const toRun = refs.filter((r) => !credited.includes(r));
       const w = res?.waiting;
@@ -949,7 +982,7 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
         capped(res),
       ].join("\n");
     },
-  };
+  });
 }
 
 /**

@@ -51,6 +51,19 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*qahub__qahub_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/folder-check.mjs"
+            ],
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
