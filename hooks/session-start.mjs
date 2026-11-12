@@ -5,10 +5,11 @@
 // down costs a few seconds at most. In a folder that isn't linked to QA Hub it says one short line.
 import { appRoot, gitRepos, linkedProject, rememberProject } from "../server/index.mjs";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { noteStart } from "./build-check.mjs";
-import { client, DATA_NOTE, publishedVersion, said, sayAndEnd, sessionOf, updateNote } from "../server/qahub.mjs";
+import { client, DATA_NOTE, gitBranch, publishedVersion, said, sayAndEnd, sessionOf, updateNote } from "../server/qahub.mjs";
 
 // The session's folder comes on stdin (Claude Code's hook input); give up waiting after a moment.
 const input = await new Promise((ok) => {
@@ -18,7 +19,10 @@ const input = await new Promise((ok) => {
 
 const root = appRoot(input.cwd || process.cwd());
 // Where the checkout stands now: the Stop hook tells from it which app files changed in this session (build-check.mjs).
-if (!process.env.QAHUB_CHAT) noteStart(root, path.join(os.tmpdir(), `qahub-start-${sessionOf(input)}.json`), Date.now(), !["compact", "clear"].includes(input.source));
+const START = path.join(os.tmpdir(), `qahub-start-${sessionOf(input)}.json`);
+if (!process.env.QAHUB_CHAT) noteStart(root, START, Date.now(), !["compact", "clear"].includes(input.source));
+// "Tests can't be written here yet" (below) is said anew each session start: the Stop hook reads this mark (build-check.mjs).
+try { fs.rmSync(`${START}.off`, { force: true }); } catch { /* nothing to forget */ }
 let project = linkedProject(root);
 let linked = !!project;
 
@@ -61,6 +65,18 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
     }
     if (!linked) {
       text = `${who} ${unlinked}`;
+    } else if (await (async () => {
+      // GitHub isn't set up for this project in QA Hub, and this is a developer's code folder (a git checkout): tests
+      // written from the code would wait for good (QA Hub refuses their plan and push) — so Claude is told before it
+      // writes one, and nothing here asks it for tests (2026-11-12).
+      const [s] = await extra;
+      const why = s?.developerTests?.ok === false && gitBranch(root) ? said(s.developerTests.why, 200) : null;
+      if (!why) return false;
+      try { fs.writeFileSync(`${START}.off`, why); } catch { /* the Stop hook then asks as before */ }
+      text = `${who} TESTS CAN'T BE WRITTEN HERE YET for the QA Hub project “${project}”: ${why}. A company admin sets it up in QA Hub → Settings → Connections → GitHub (connect GitHub, then tick this app's repository) — ${qa.origin()}. Don't write, plan or push tests for this project until then, and don't call qahub_plan or qahub_push: QA Hub refuses them. If the user asks for tests, or you build something that should have tests, tell the user this once, in plain words.`;
+      return true;
+    })()) {
+      // said above
     } else {
       text = `${who} ${me.computer ? `Their computer (${said(me.computer.name)}) is connected, so qahub_run can run tests.` : "Their computer isn't connected to QA Hub yet, so tests can be sent but not run."} When you build or change a feature, write Playwright tests for it, send them and run them with the qahub tools (see the qahub:write-tests skill).`;
       // The project's shape up front, so Claude knows where tests go before writing one.

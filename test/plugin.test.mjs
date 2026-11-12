@@ -15,6 +15,7 @@ const KEYS = { "qh_good": true, "qh_expired": false, "qh_nopc": true }; // qh_no
 const pushed = [];
 let projectReads = 0; // GET /api/v1/projects/freight — the heavy project summary
 let moreTests = []; // tests one case adds to the project summary
+let devOff = null; // why a developer's Claude may not write tests for the project (QA Hub: GitHub not set up for it)
 let repoAnswer = () => ({ none: true }); // what QA Hub says a folder's GitHub repo is (?repoHash=)
 const planned = [];
 let planReview = false;
@@ -60,7 +61,7 @@ const server = http.createServer((req, res) => {
     }
     if (u.pathname === "/api/v1/projects/keepgo") return out(200, { slug: "keepgo", tests: [{ ref: "TEST-00006", title: "Hazardous SDS", stage: "active", file: "a.spec.ts", verified: false, passes: 0 }] });
     if (u.pathname === "/api/v1/projects/freight/knowledge" && req.method === "PUT") { learned.push(JSON.parse(b)); return out(200, { saved: JSON.parse(b).topic }); }
-    if (u.pathname === "/api/v1/projects/freight" && ++projectReads) return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"],
+    if (u.pathname === "/api/v1/projects/freight" && ++projectReads) return out(200, { slug: "freight", name: "Freight portal", repos: ["acme/freight-portal"], ...(devOff ? { developerTests: { ok: false, why: devOff } } : {}),
       environments: [{ name: "Local", url: "http://localhost:3000", kind: "local" }],
       modules: [{ name: "Quotes", path: "/quotes", parent: null, tests: 1 }, { name: "Quote details", path: "/quotes/1", parent: "/quotes", tests: 0 }, { name: "Log in", path: "/login", parent: null, tests: 1 }],
       sets: [{ name: "Release check", description: "Before every release", tests: ["TEST-00004"] }],
@@ -1684,4 +1685,40 @@ test("a test helper under qahub/ is not the app changing — the same rule as QA
   const { changedSincePush } = await import("../hooks/build-check.mjs");
   const edit = (f) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: `/app/${f}` } }] } });
   assert.deepEqual(changedSincePush([edit("qahub/quotes/helpers.ts"), edit("qahub/shared/data.ts"), edit("src/Quote.tsx")].join("\n"), "/app"), ["src/Quote.tsx"]);
+});
+
+test("GitHub not set up for the project: in a developer's code folder Claude is told at the start to write no tests — and isn't sent back to write any; a plan names its branch so QA Hub can refuse it", async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-dev-"));
+  const git = (...a) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t.dev", ...a], { stdio: ["ignore", "pipe", "ignore"] });
+  const env = { CLAUDE_PLUGIN_OPTION_API_KEY: "qh_good", CLAUDE_PLUGIN_OPTION_SERVER: base };
+  try {
+    git("init", "-q", "-b", "feature-x");
+    fs.mkdirSync(path.join(repo, "src"));
+    fs.writeFileSync(path.join(repo, "qahub.json"), JSON.stringify({ project: "freight" }));
+    fs.writeFileSync(path.join(repo, "src/a.ts"), "export const a = 1;\n");
+    git("add", "-A"); git("commit", "-qm", "start");
+    devOff = "no GitHub repository is connected to this project";
+    moreTests = [{ ref: "TEST-00020", title: "Delete a quote", module: "Quotes", tags: [], file: null, steps: ["Delete it"], by: "planned by Claude (Ana)", stage: "approved" }];
+    const said = JSON.parse((await hook("hooks/session-start.mjs", { cwd: repo, session_id: "dev-off" }, env)).out).hookSpecificOutput.additionalContext;
+    assert.match(said, /TESTS CAN'T BE WRITTEN HERE YET[^\n]*no GitHub repository is connected to this project[^\n]*Settings → Connections → GitHub[^\n]*Don't write, plan or push tests[^\n]*tell the user/);
+    assert.doesNotMatch(said, /write Playwright tests for it|APPROVED PLANS WAITING|qahub:write-tests skill/, "nothing that asks for tests");
+    // About to stop after changing the app: not sent back to write tests it may not write.
+    const { stopCheck } = await import("../hooks/stop.mjs");
+    const edit = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: path.join(repo, "src/a.ts") } }] } });
+    const files = (id) => ({ seen: path.join(os.tmpdir(), `qahub-build-${id}-${Date.now()}`), state: path.join(os.tmpdir(), `qahub-ui-${id}.json`), start: path.join(os.tmpdir(), `qahub-start-${id}.json`) });
+    assert.equal(stopCheck({ cwd: repo, session_id: "dev-off" }, edit, files("dev-off"), {}), null);
+    assert.equal(stopCheck({ cwd: repo, session_id: "another" }, edit, files("another"), {})?.decision, "block", "a session that wasn't told is asked as before");
+    // A plan from this folder names its branch: QA Hub refuses a developer's plan by it.
+    const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base }, repo);
+    await t.qahub_plan({ tests: [{ title: "Delete a quote", module: "Quotes", type: "functional", steps: [{ title: "Delete it", expect: "It is gone" }] }] });
+    assert.equal(planned.at(-1).branch, "feature-x");
+    // Set up since: the next session start says nothing of it, and the Stop check is back.
+    devOff = null;
+    assert.doesNotMatch(JSON.parse((await hook("hooks/session-start.mjs", { cwd: repo, session_id: "dev-off" }, env)).out).hookSpecificOutput.additionalContext, /CAN'T BE WRITTEN/);
+    assert.equal(stopCheck({ cwd: repo, session_id: "dev-off" }, edit, files("dev-off"), {})?.decision, "block");
+    // A QA's folder (no git checkout): never told — their work names no branch, and QA Hub takes it.
+    devOff = "no GitHub repository is connected to this project";
+    fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
+    assert.doesNotMatch(JSON.parse((await hook("hooks/session-start.mjs", { cwd: app, session_id: "qa" }, env)).out).hookSpecificOutput.additionalContext, /CAN'T BE WRITTEN/);
+  } finally { devOff = null; moreTests = []; fs.rmSync(repo, { recursive: true, force: true }); }
 });

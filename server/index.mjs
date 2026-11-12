@@ -647,7 +647,10 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
     async qahub_plan({ project, behaviours = [], tests = [] } = {}) {
       await qa.whoami();
       const p = projectOf(project);
-      const res = await qa.call("POST", `/api/v1/projects/${p}/plan`, { ...(behaviours.length ? { behaviours } : {}), tests });
+      // From a developer's code folder the plan names its branch, as a push does: QA Hub refuses a developer's tests while
+      // GitHub isn't set up for the project — before anything is written.
+      const branch = gitBranch(root());
+      const res = await qa.call("POST", `/api/v1/projects/${p}/plan`, { ...(behaviours.length ? { behaviours } : {}), tests, ...(branch ? { branch } : {}) });
       // Each test case's stage says whether it waits for a person (high-priority and risky ones, by default).
       building(root(), [...res.planned, ...(res.updated ?? [])].map((x) => x.ref));
       const waiting = res.planned.filter((x) => x.stage === "planned").length;

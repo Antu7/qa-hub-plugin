@@ -80,6 +80,8 @@ export function gitChanged(root, startFile, since = 0) {
 /** The Stop hook's answer, or null. `seen` keeps what it last asked about: { pushes, files }; `start`: noteStart's file. */
 export function buildCheck(input, transcript, seen, start) {
   if (input?.stop_hook_active) return null;
+  // This session was told tests can't be written here yet (GitHub not set up for the project — session-start.mjs): never sent back to write them.
+  if (start && fs.existsSync(`${start}.off`)) return null;
   const root = appRoot(input?.cwd || process.cwd());
   if (!projectAt(root)) return null;
   const files = [...new Set([...changedSincePush(transcript, root), ...(start ? gitChanged(root, start, lastPushAt(transcript)) : [])])].sort();

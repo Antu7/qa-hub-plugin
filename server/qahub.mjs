@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.8.3";
+export const VERSION = "0.9.0";
 /**
  * Text from QA Hub put into Claude's context (a module's name, a test's title, a person's note): one line, capped — it
  * can't start a new paragraph that reads like an instruction. DATA_NOTE says, beside it, what it is.
