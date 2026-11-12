@@ -13,7 +13,7 @@ import { isTestFile } from "./test-checklist.mjs";
 
 // App code a user can see the effect of. Not tests, docs, config, lock files, styles alone or generated output.
 const CODE = /\.(tsx?|jsx?|mjs|cjs|vue|svelte|astro|html?|php|py|rb|go|java|kt|cs|erb|twig|blade\.php)$/i;
-const NOT_APP = /(^|\/)(tests?|e2e|__tests__|__mocks__|spec|specs|cypress|playwright|docs?|scripts|migrations|node_modules|dist|build|\.next|coverage)\//i;
+const NOT_APP = /(^|\/)(tests?|e2e|__tests__|__mocks__|spec|specs|cypress|playwright|qahub|docs?|scripts|migrations|node_modules|dist|build|\.next|coverage)\//i;
 const CONFIG = /(^|\/)[^/]*\.config\.[cm]?[jt]s$|(^|\/)\.[^/]+$/i;
 
 /** App files Claude changed since its last qahub_push, from the session's transcript (JSONL). */

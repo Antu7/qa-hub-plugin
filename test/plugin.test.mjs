@@ -1679,3 +1679,9 @@ test("app code changed without the Edit tool (a script, sed, a formatter) is see
     assert.equal(buildCheck({ cwd: repo }, "", seen(), start), null);
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });
+
+test("a test helper under qahub/ is not the app changing — the same rule as QA Hub's own (lib/app-code.ts): it sent Claude back to 'write tests' for a helper", async () => {
+  const { changedSincePush } = await import("../hooks/build-check.mjs");
+  const edit = (f) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: `/app/${f}` } }] } });
+  assert.deepEqual(changedSincePush([edit("qahub/quotes/helpers.ts"), edit("qahub/shared/data.ts"), edit("src/Quote.tsx")].join("\n"), "/app"), ["src/Quote.tsx"]);
+});
