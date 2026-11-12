@@ -5,7 +5,10 @@
 // down costs a few seconds at most. In a folder that isn't linked to QA Hub it says one short line.
 import { appRoot, gitRepos, linkedProject, rememberProject } from "../server/index.mjs";
 import { createHash } from "node:crypto";
-import { client, DATA_NOTE, publishedVersion, said, updateNote } from "../server/qahub.mjs";
+import os from "node:os";
+import path from "node:path";
+import { noteStart } from "./build-check.mjs";
+import { client, DATA_NOTE, publishedVersion, said, sayAndEnd, sessionOf, updateNote } from "../server/qahub.mjs";
 
 // The session's folder comes on stdin (Claude Code's hook input); give up waiting after a moment.
 const input = await new Promise((ok) => {
@@ -14,6 +17,8 @@ const input = await new Promise((ok) => {
 });
 
 const root = appRoot(input.cwd || process.cwd());
+// Where the checkout stands now: the Stop hook tells from it which app files changed in this session (build-check.mjs).
+if (!process.env.QAHUB_CHAT) noteStart(root, path.join(os.tmpdir(), `qahub-start-${sessionOf(input)}.json`), Date.now(), !["compact", "clear"].includes(input.source));
 let project = linkedProject(root);
 let linked = !!project;
 
@@ -88,4 +93,4 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
   if (/“/.test(text) || /Modules:/.test(text)) text += ` (${DATA_NOTE})`;
   text += updateNote(await latest);
 }
-process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }));
+sayAndEnd({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } });

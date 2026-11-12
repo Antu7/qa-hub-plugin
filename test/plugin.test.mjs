@@ -623,7 +623,8 @@ test("the server and hooks start from a path with a space and through a symlink 
 });
 
 test("the address: the default is QA Hub's own; office-network addresses work over http; a public one needs https", () => {
-  assert.equal(DEFAULT_SERVER, "https://app.qahub.dev");
+  assert.equal(DEFAULT_SERVER, "https://qahub.sdsmanager.com"); // 2026-11-12: app.qahub.dev was never a QA Hub — a hand install left there reached nothing (or, one day, someone else)
+  assert.doesNotMatch(fs.readFileSync(path.join(HERE, "../README.md"), "utf8") + JSON.stringify(JSON.parse(fs.readFileSync(path.join(HERE, "../.claude-plugin/plugin.json"), "utf8"))), /qahub\.dev/);
   const manifest = JSON.parse(fs.readFileSync(path.join(HERE, "../.claude-plugin/plugin.json"), "utf8"));
   assert.equal(manifest.userConfig.server.default, DEFAULT_SERVER, "one default, everywhere");
   for (const ok of ["http://10.110.100.85:3100", "http://192.168.1.20:3100", "http://172.20.0.5"]) assert.equal(serverUrl(ok), ok);
@@ -1592,4 +1593,89 @@ test("a QA Hub call from a worktree that doesn't name it is turned back with the
   } finally {
     for (const d of [dir, path.dirname(tree), other.dir]) fs.rmSync(d, { recursive: true, force: true });
   }
+});
+
+// ---- the 2026-11-12 review of the plugin ----------------------------------------------------------
+
+test("a hook ends as soon as it has answered — a connection QA Hub never answered doesn't hold Claude Code (it held every message 5 s, a session start 10 s)", async () => {
+  // What stays open after the answer: here a timer, in the field undici's connect attempt (10 s) after the plugin's own 3 s limit.
+  const code = `import { hookMain } from ${JSON.stringify(path.join(HERE, "../server/qahub.mjs"))}; hookMain(async () => { setInterval(() => {}, 1000); return { ok: true }; });`;
+  const t = Date.now();
+  const out = await new Promise((ok, no) => {
+    const c = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["pipe", "pipe", "inherit"] });
+    let said = ""; c.stdout.on("data", (d) => (said += d));
+    const kill = setTimeout(() => { c.kill("SIGKILL"); no(new Error("the hook never ended")); }, 6_000);
+    c.on("exit", () => { clearTimeout(kill); ok(said); });
+    c.stdin.end("{}");
+  });
+  assert.equal(out, '{"ok":true}');
+  assert.ok(Date.now() - t < 3_000, "ended with its answer");
+  for (const f of ["session-start.mjs", "review-check.mjs"]) { const src = fs.readFileSync(path.join(HERE, "../hooks", f), "utf8"); assert.match(src, /sayAndEnd\(/, `${f} ends itself`); assert.doesNotMatch(src, /process\.stdout\.write/); }
+});
+
+test("the skill never tells Claude that API tests can't be done (it explains how, further down)", () => {
+  const skill = fs.readFileSync(path.join(HERE, "../skills/write-tests/SKILL.md"), "utf8");
+  assert.doesNotMatch(skill, /browser tests only|API-only/);
+  assert.match(skill.split("\n").find((l) => /never pretend/.test(l)), /API tests[^\n]*load, security scanning or unit tests/);
+});
+
+test("a big project's overview fits what Claude Code shows (50,000 characters): titles only, the rest one module at a time", () => {
+  const mods = Array.from({ length: 25 }, (_, i) => ({ name: `Module ${i}`, path: `/m${i}`, tests: 12,
+    behaviours: Array.from({ length: 12 }, (_, k) => ({ name: `Behaviour ${k} of module ${i} said in a full sentence`, state: k % 3 ? "proven" : "untested", priority: "medium" })) }));
+  const tests = Array.from({ length: 300 }, (_, i) => ({ ref: `TEST-${String(i + 1).padStart(5, "0")}`, title: `Test number ${i} does one thing a person checks`, module: `Module ${i % 25}`, file: `qahub/m${i % 25}/t${i}.spec.ts`,
+    type: "functional", tags: ["smoke"], by: "Claude (Ana)", description: "x".repeat(480), steps: ["Open", "Do", "See"] }));
+  const big = { name: "Big", slug: "big", environments: [], sets: [], tags: [], modules: mods, tests,
+    folders: Array.from({ length: 200 }, (_, i) => `qahub/folder-number-${i}`), helpers: Array.from({ length: 200 }, (_, i) => `qahub/folder-number-${i}/helpers.ts`),
+    helperIndex: { total: 900, duplicates: [], files: Array.from({ length: 200 }, (_, i) => ({ file: `qahub/folder-number-${i}/helpers.ts`, count: 4, module: `Module ${i % 25}` })) } };
+  const said = describeProject(big);
+  assert.ok(said.length < 50_000, `${said.length} characters`);
+  assert.match(said, /TEST-00300 “Test number 299 does one thing a person checks”/, "every test's title is still there: nothing is written twice");
+  assert.doesNotMatch(said, /x{100}/, "no descriptions in the overview");
+  assert.match(said, /qahub_project \{ module \}/);
+  assert.match(said, /Module 3: 12 — 8 proven, 4 untested/, "behaviours by module, counted");
+  assert.match(describeProject(big, "Module 3"), /x{100}/, "a module's own view is in full");
+  // A small project keeps the full lines.
+  assert.match(describeProject({ ...big, tests: tests.slice(0, 20), modules: mods.slice(0, 2) }), /x{100}/);
+});
+
+test("words an edit took out: only what a person reads (and test ids) — an import, a config value or a key never sends Claude back", async () => {
+  const { removedWords, usesIn } = await import("../hooks/ui-change.mjs");
+  assert.deepEqual(removedWords(`"use client"; import x from "react"; const key = "id"; export const mode = "slow"; fetch("api/users"); t("form.title")`, `export const mode = 1;`), []);
+  assert.deepEqual(removedWords(`<input data-testid="quote-total" placeholder="Search…" /> <p>Sign in</p>`, `<input />`).sort(), ["Search…", "Sign in", "quote-total"]);
+  assert.deepEqual(removedWords(`{ label: "মোট", testId: "save-quote" }`, `{}`).sort(), ["save-quote", "মোট"], "other scripts are words too");
+  // Folders that aren't the app's tests are never walked: a vendored or virtual-env copy, any hidden folder.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-walk-"));
+  for (const d of ["vendor/pkg/tests", ".venv/lib/tests", "tests"]) { fs.mkdirSync(path.join(root, d), { recursive: true }); fs.writeFileSync(path.join(root, d, "a.spec.ts"), `getByText("Save quote")`); }
+  assert.deepEqual(usesIn(root, ["Save quote"]).map((h) => h.at), ["tests/a.spec.ts:1"]);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("app code changed without the Edit tool (a script, sed, a formatter) is seen too — from git, since the session started and since the last push", async () => {
+  const { buildCheck, noteStart } = await import("../hooks/build-check.mjs");
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "qahub-git-"));
+  const git = (...a) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t.dev", ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  try {
+    git("init", "-q", "-b", "main");
+    fs.mkdirSync(path.join(repo, "src")); fs.mkdirSync(path.join(repo, "tests"));
+    fs.writeFileSync(path.join(repo, "qahub.json"), JSON.stringify({ project: "freight" }));
+    fs.writeFileSync(path.join(repo, "src/a.ts"), "export const a = 1;\n"); fs.writeFileSync(path.join(repo, "src/old.ts"), "export const o = 1;\n");
+    git("add", "-A"); git("commit", "-qm", "start");
+    const start = path.join(repo, ".start.json"), seen = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "qahub-seen-")), "s");
+    noteStart(repo, start, Date.now() - 60_000);
+    assert.equal(buildCheck({ cwd: repo }, "", seen(), start), null, "nothing changed yet");
+    // Changed by a script and committed, a new file never added, a test file, and a doc.
+    fs.writeFileSync(path.join(repo, "src/a.ts"), "export const a = 2;\n"); git("commit", "-qam", "by a script");
+    fs.writeFileSync(path.join(repo, "src/new.tsx"), "export const N = () => null;\n");
+    fs.writeFileSync(path.join(repo, "tests/a.spec.ts"), "//\n"); fs.writeFileSync(path.join(repo, "README.md"), "x\n");
+    const out = buildCheck({ cwd: repo }, "", seen(), start);
+    assert.equal(out?.decision, "block");
+    assert.match(out.reason, /src\/a\.ts, src\/new\.tsx/);
+    assert.doesNotMatch(out.reason, /old\.ts|spec|README/);
+    // A push after those changes: they were covered — only what changes after it is asked about.
+    const push = JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() + 5_000).toISOString(), message: { content: [{ type: "tool_use", name: "mcp__plugin_qahub_qahub__qahub_push", input: {} }] } });
+    assert.equal(buildCheck({ cwd: repo }, push, seen(), start), null, "pushed since");
+    // Another branch checked out since the session started: git's difference is the branch, not Claude's work.
+    git("checkout", "-qb", "other");
+    assert.equal(buildCheck({ cwd: repo }, "", seen(), start), null);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
 {
   "name": "qahub",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Claude writes Playwright tests while it builds your app and sends them to QA Hub. Needs a QA Hub API key.",
   "author": { "name": "QA Hub" },
   "userConfig": {
@@ -14,8 +14,8 @@
     "server": {
       "type": "string",
       "title": "QA Hub address",
-      "description": "The address you open QA Hub at — shown on QA Hub's Claude setup page. Leave as is for app.qahub.dev.",
-      "default": "https://app.qahub.dev"
+      "description": "The address you open QA Hub at — shown on QA Hub's Claude setup page. Leave as is for qahub.sdsmanager.com.",
+      "default": "https://qahub.sdsmanager.com"
     }
   }
 }

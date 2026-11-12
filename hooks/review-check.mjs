@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { appRoot, projectAt, reviewState } from "../server/index.mjs";
-import { client, DATA_NOTE, said } from "../server/qahub.mjs";
+import { client, DATA_NOTE, said, sayAndEnd } from "../server/qahub.mjs";
 
 const input = await new Promise((ok) => {
   let raw = ""; const done = () => { process.stdin.destroy(); try { ok(JSON.parse(raw || "{}")); } catch { ok({}); } };
@@ -31,5 +31,5 @@ try {
   for (const t of approved) seen[t.ref] = "approved";
   for (const c of changes) seen[c.ref] = `changes:${c.request?.at}`;
   fs.writeFileSync(seenFile, JSON.stringify(seen));
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `QA Hub, since the last message: ${lines.join(" ")} (${DATA_NOTE})` } }));
-} catch { /* not linked, or QA Hub can't be reached: nothing to say */ }
+  sayAndEnd({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `QA Hub, since the last message: ${lines.join(" ")} (${DATA_NOTE})` } });
+} catch { sayAndEnd(null); /* not linked, or QA Hub can't be reached: nothing to say — and nothing to wait for */ }

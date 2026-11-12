@@ -18,10 +18,10 @@ import { client } from "../server/qahub.mjs";
  * Both checks' answers as one Stop answer, or null. Never in Eclipse's chat (QAHUB_CHAT): its helpers under qahub/ aren't
  * the app changing, and its own loop decides when it's done (2026-10-28: it was sent back, adding a stray paragraph).
  */
-export function stopCheck(input, transcript, { seen, state }, env = process.env) {
+export function stopCheck(input, transcript, { seen, state, start }, env = process.env) {
   if (env.QAHUB_CHAT) return null;
   const reasons = [];
-  for (const check of [() => buildCheck(input, transcript, seen), () => staleCheck(input, state)]) {
+  for (const check of [() => buildCheck(input, transcript, seen, start), () => staleCheck(input, state)]) {
     try { const out = check(); if (out?.decision === "block") reasons.push(out.reason); } catch { /* never block on an error */ }
   }
   return reasons.length ? { decision: "block", reason: reasons.join("\n\n") } : null;
@@ -70,6 +70,7 @@ if (isMain(import.meta.url)) hookMain(async (input) => {
   const first = stopCheck(input, transcript, {
     seen: path.join(os.tmpdir(), `qahub-build-${id}`),
     state: path.join(os.tmpdir(), `qahub-ui-${id}.json`),
+    start: path.join(os.tmpdir(), `qahub-start-${id}.json`),
   });
   const more = await keepGoingCheck(input, transcript, path.join(os.tmpdir(), `qahub-keep-${id}.json`)).catch(() => null);
   const reasons = [first?.reason, more?.reason].filter(Boolean);

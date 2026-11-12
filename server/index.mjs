@@ -130,8 +130,9 @@ export const TOOLS = [
   },
   {
     name: "qahub_project",
-    description: "The project's structure in QA Hub — read it before writing tests: the module tree (each module's address and how many tests it has), the hand-picked sets, every test on one line (ref, title, module, tags, file, what it protects), the tags in use, the spec folders and the shared helper files. With module: that module's tests in full — steps, test data, whether each counts yet. Put each new test in the module for the part of the app it covers; reuse the helpers; don't write a test that already exists.",
+    description: "The project's structure in QA Hub — read it before writing tests: the module tree (each module's address and how many tests it has), the hand-picked sets, every test on one line (ref, title, module, tags, file, what it protects — in a big project: ref and title), the tags in use, the spec folders and the shared helper files. With module: that module's tests in full — file, what each protects, steps, test data, whether each counts yet. Put each new test in the module for the part of the app it covers; reuse the helpers; don't write a test that already exists.",
     inputSchema: { type: "object", properties: { module: { type: "string", description: "A module's name or address: its tests with their steps and test data" }, project: { type: "string", description: "Leave out to use the linked project" } }, additionalProperties: false },
+    _meta: { "anthropic/maxResultSizeChars": 200_000 }, // one module in full is read whole, never from a file in pieces (Claude Code's default: 50,000)
   },
   {
     name: "qahub_design",
@@ -431,11 +432,17 @@ export function describeProject(s, module) {
   for (const t of s.tests) if (!want || t.module === want.name) byModule.set(t.module, [...(byModule.get(t.module) ?? []), t]);
   const MAX = 300;
   const list = [];
-  let shown = 0;
+  let shown = 0, chars = 0, cut = false;
+  // A big project's overview is titles only (2026-11-12): with every test's file, description and author it was 142 KB for
+  // 236 tests — Claude Code shows a tool's answer up to 50,000 characters, the rest goes to a file Claude reads in pieces or
+  // not at all. Titles are what keeps a test from being written twice; the rest is one module away.
+  const slim = !want && s.tests.length > SLIM_OVER;
   for (const [mod, ts] of byModule) {
     list.push(`${mod}:`);
     for (const t of ts) {
-      if (shown++ >= MAX) break;
+      if (shown >= MAX || chars > SLIM_CHARS) { cut = true; break; }
+      shown++;
+      if (slim) { list.push(`  ${t.ref} “${t.title}”${t.file ? "" : t.stage === "planned" ? " (planned, waiting for review)" : " (planned, approved — no code yet)"}`); chars += list.at(-1).length; continue; }
       list.push(`  ${t.ref} “${t.title}” (${t.file ?? (t.stage === "planned" ? "planned, waiting for review" : "planned, approved — no code yet")})${t.type ? ` [${t.type}${t.priority === "high" ? ", high" : ""}${t.depth ? `, ${t.depth}` : ""}]` : ""}${t.tags?.length ? ` ${t.tags.map((x) => `@${x}`).join(" ")}` : ""}${t.needs?.length ? ` — needs ${t.needs.join(", ")}` : ""}${t.runAs ? ` — as ${t.runAs}` : ""}${t.signsInAs?.length ? ` (switches to ${t.signsInAs.join(", ")})` : ""}${t.description ? ` — ${t.description}` : ""}${t.by ? ` — ${t.by}` : ""}${t.waitingFor ? ` — waiting for ${t.waitingFor}: no place runs it yet, QAs don't see it` : ""}`);
       if (!want) continue; // steps and data: one module at a time
       if (t.steps?.length) list.push(`    ${t.steps.slice(0, 12).join(" → ")}`);
@@ -446,17 +453,22 @@ export function describeProject(s, module) {
     }
   }
   const total = [...byModule.values()].reduce((n, x) => n + x.length, 0);
-  if (total > MAX) list.push(`…and ${total - MAX} more (${total} tests in all).`);
-  if (!want) list.push("Each test's steps and test data, one module at a time: qahub_project { module }.");
+  if (cut) list.push(`…and ${total - shown} more (${total} tests in all) — qahub_project { module } lists a module's, qahub_find says what already tests a behaviour.`);
+  if (!want) list.push(slim ? "Titles only here (a big project). A module's tests in full — file, what each protects, steps, test data, who wrote it: qahub_project { module }." : "Each test's steps and test data, one module at a time: qahub_project { module }.");
+  const designed = s.modules.filter((m) => m.behaviours?.length);
+  const named = designed.map((m) => `${m.name}: ${m.behaviours.map((b) => `${b.name} [${b.state}${b.priority === "high" ? ", high" : ""}]`).join("; ")}`).join("\n");
+  // Many behaviours: counted per module, by state — their names are qahub_design's.
+  const counted = () => designed.map((m) => `${m.name}: ${m.behaviours.length} — ${Object.keys(STATE).map((k) => [m.behaviours.filter((b) => b.state === k).length, STATE[k]]).filter(([n]) => n).map(([n, word]) => `${n} ${word}`).join(", ")}`).join("\n");
   return [
     `Project ${s.slug}${s.name ? ` (${s.name})` : ""}.`,
     `Modules (the app's areas, in its menu order — a test belongs to the one for the page it covers):\n${tree.join("\n") || "none yet"}`,
-    ...(s.modules.some((m) => m.behaviours?.length) ? [`Behaviours (what each module should be tested for — qahub_design shows one module with its guide):\n${s.modules.filter((m) => m.behaviours?.length)
-      .map((m) => `${m.name}: ${m.behaviours.map((b) => `${b.name} [${b.state}${b.priority === "high" ? ", high" : ""}]`).join("; ")}`).join("\n")}`]
+    ...(designed.length ? [named.length > 4_000 && !want
+      ? `Behaviours (what each module should be tested for), counted — qahub_design { module } names them, with its guide:\n${counted()}`
+      : `Behaviours (what each module should be tested for — qahub_design shows one module with its guide):\n${named}`]
       : ["Behaviours: none designed yet — qahub_design a module, then propose its behaviours with qahub_plan."]),
-    `Sets (hand-picked, run in this order): ${s.sets?.length ? `\n${s.sets.map((x) => `- ${x.name}${x.description ? ` — ${x.description}` : ""}: ${x.tests.join(", ") || "empty"}`).join("\n")}` : "none"}. Every module and every tag is also a set of its own, automatically.`,
+    `Sets (hand-picked, run in this order): ${s.sets?.length ? `\n${s.sets.map((x) => `- ${x.name}${x.description ? ` — ${x.description}` : ""}: ${some(x.tests, 30) || "empty"}`).join("\n")}` : "none"}. Every module and every tag is also a set of its own, automatically.`,
     describeLabels(s),
-    `Spec folders: ${s.folders?.join(", ") || "none yet"}. Shared helpers: ${s.helpers?.join(", ") || "none yet"}.`,
+    `Spec folders: ${some(s.folders, 40) || "none yet"}. Shared helpers: ${some(s.helpers, 40) || "none yet"}.`,
     ...(s.helperIndex ? [describeHelperIndex(s.helperIndex)] : []),
     `Environments: ${s.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}.`,
     describeAccounts(s),
@@ -465,10 +477,15 @@ export function describeProject(s, module) {
   ].join("\n\n");
 }
 
+/** A list as Claude reads it, never endless: the first `max`, then how many more. */
+const some = (list, max) => { const l = list ?? []; return l.slice(0, max).join(", ") + (l.length > max ? `, and ${l.length - max} more` : ""); };
+/** A project with more tests than this gets the overview in titles (describeProject) — and at most this much of them. */
+const SLIM_OVER = 60, SLIM_CHARS = 30_000;
+
 /** The helpers catalog, compact: how many, where, and what's written twice — qahub_helpers searches it. */
 export function describeHelperIndex(h) {
   if (!h.total) return "Helpers: none yet. Before writing one, qahub_helpers; one two modules need goes in qahub/shared/.";
-  return [`Helpers: ${h.total} in ${h.files.length} file${h.files.length === 1 ? "" : "s"} — ${h.files.map((f) => `${f.file} ${f.count}${f.module ? ` (${f.module})` : ""}`).join(", ")}. Before writing a helper, qahub_helpers { query } — import one that exists, never write a second.`,
+  return [`Helpers: ${h.total} in ${h.files.length} file${h.files.length === 1 ? "" : "s"} — ${some(h.files.map((f) => `${f.file} ${f.count}${f.module ? ` (${f.module})` : ""}`), 30)}. Before writing a helper, qahub_helpers { query } — import one that exists, never write a second.`,
     ...(h.duplicates.length ? [`Written twice (import one, drop the other): ${h.duplicates.slice(0, 10).map((d) => `${d.name} (${d.files.join(", ")})`).join("; ")}.`] : [])].join("\n");
 }
 

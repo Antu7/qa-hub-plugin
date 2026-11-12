@@ -4,6 +4,7 @@
 // one line why the change needs none. Once per push: asked again only for app files it wasn't asked about since the
 // last qahub_push (feature B after feature A's push is asked; a "needs no tests" isn't nagged for the same files).
 // Never loops (stop_hook_active), never blocks on errors.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { appRoot, projectAt } from "../server/index.mjs";
@@ -27,19 +28,61 @@ export function changedSincePush(transcript, root) {
       const file = c.input?.file_path;
       if (typeof file !== "string") continue;
       const rel = path.relative(root, path.resolve(root, file)).split(path.sep).join("/");
-      if (rel.startsWith("..") || !CODE.test(rel) || isTestFile(rel) || NOT_APP.test(rel) || CONFIG.test(rel)) continue;
+      if (rel.startsWith("..") || !isApp(rel)) continue;
       changed.add(rel);
     }
   }
   return [...changed];
 }
 
-/** The Stop hook's answer, or null. `seen` keeps what it last asked about: { pushes, files }. */
-export function buildCheck(input, transcript, seen) {
+const git = (root, ...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", timeout: 3_000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "ignore"] }).trim();
+const isApp = (rel) => CODE.test(rel) && !isTestFile(rel) && !NOT_APP.test(rel) && !CONFIG.test(rel);
+
+/**
+ * Where this checkout stood when the session started (the session-start hook): its commit, branch and the time — what
+ * gitChanged compares with. `fresh`: a new sitting (startup, resume) starts over; a compact or /clear keeps it. Never throws.
+ */
+export function noteStart(root, file, at = Date.now(), fresh = true) {
+  try {
+    if (!fresh && fs.existsSync(file)) return;
+    const [head, branch] = git(root, "rev-parse", "HEAD", "--abbrev-ref", "HEAD").split("\n");
+    fs.writeFileSync(file, JSON.stringify({ head, branch, at }));
+  } catch { /* not a git checkout (or no commit yet): only the transcript's edits are seen */ }
+}
+
+/** When Claude last pushed tests in this session (ms), from the transcript's own times; 0 when it didn't. */
+export function lastPushAt(transcript) {
+  let at = 0;
+  for (const line of transcript.split("\n")) {
+    if (!line.includes("qahub_push")) continue;
+    try { const e = JSON.parse(line); if ((e?.message?.content ?? []).some((c) => c?.type === "tool_use" && /qahub_push$/.test(c.name ?? ""))) at = Math.max(at, Date.parse(e.timestamp) || 0); } catch { /* not JSON */ }
+  }
+  return at;
+}
+
+/**
+ * App files that changed in this checkout since the session started, however they were changed (2026-11-12: a script,
+ * sed, a formatter, a commit — the transcript's Edit/Write calls saw 1 of 15 in one session): git's difference from the
+ * start commit plus new files, touched after `since`. Nothing when the branch changed since (the difference is the
+ * branch's) or when it's more than 60 files (a pull or a merge, not Claude's work). Never throws.
+ */
+export function gitChanged(root, startFile, since = 0) {
+  try {
+    const start = JSON.parse(fs.readFileSync(startFile, "utf8"));
+    if (git(root, "rev-parse", "--abbrev-ref", "HEAD") !== start.branch) return [];
+    const files = [...new Set([...git(root, "diff", "--name-only", "--relative", start.head).split("\n"), ...git(root, "ls-files", "--others", "--exclude-standard").split("\n")].filter(Boolean))];
+    if (files.length > 60) return [];
+    const after = Math.max(since, start.at ?? 0);
+    return files.filter((rel) => isApp(rel) && (fs.statSync(path.join(root, rel), { throwIfNoEntry: false })?.mtimeMs ?? 0) > after);
+  } catch { return []; }
+}
+
+/** The Stop hook's answer, or null. `seen` keeps what it last asked about: { pushes, files }; `start`: noteStart's file. */
+export function buildCheck(input, transcript, seen, start) {
   if (input?.stop_hook_active) return null;
   const root = appRoot(input?.cwd || process.cwd());
   if (!projectAt(root)) return null;
-  const files = changedSincePush(transcript, root);
+  const files = [...new Set([...changedSincePush(transcript, root), ...(start ? gitChanged(root, start, lastPushAt(transcript)) : [])])].sort();
   if (!files.length) return null;
   const pushes = (transcript.match(/"name":"[^"]*qahub_push"/g) ?? []).length; // a push starts a new set of changes
   let asked = {};

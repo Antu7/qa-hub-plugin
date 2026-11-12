@@ -12,16 +12,25 @@ import { appRoot, projectAt } from "../server/index.mjs";
 import { hookMain, isMain, sessionOf } from "../server/qahub.mjs";
 import { isTestFile } from "./test-checklist.mjs";
 
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage", "out", ".turbo", ".cache"]);
+// Never the app's own tests: build output, other people's code, virtual environments — and every hidden folder (usesIn).
+const SKIP_DIRS = new Set(["node_modules", "dist", "build", "coverage", "out", "vendor", "target", "venv", "env", "Pods", "tmp", "__pycache__", "bower_components"]);
 const TEST_DIR = /(^|\/)(tests?|e2e|playwright|__tests__|specs?)\//i;
 const CODE = /\.[cm]?[jt]sx?$/i;
 
 /** Text a person reads: has a letter, isn't a path, a URL or code. */
 const wordy = (s) => s.length >= 2 && s.length <= 60 && /\p{L}/u.test(s) && !/^(\/|https?:|\.|#)/.test(s) && !/[{}$<>\\]/.test(s);
+/**
+ * A quoted string that is code, not words (2026-11-12): only lowercase ASCII — an import ("react"), a key ("id",
+ * "form.title"), a config value ("slow"), a path ("api/users"), a directive ("use client"). Taking one out sent Claude
+ * back whenever any test quoted the same word. Text a person reads has a capital, a non-ASCII letter or punctuation.
+ */
+const codeLike = (s) => /^[a-z0-9_./: -]+$/.test(s);
+const TEST_ID = /(?:data-(?:testid|test-id|test|cy|qa)|testid|test_id)["']?\s*[=:]\s*(["'`])((?:\\.|(?!\1)[^\\\n])+)\1/gi;
 function wordsIn(code) {
   const out = new Set();
-  for (const m of code.matchAll(/(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g)) if (wordy(m[2].trim())) out.add(m[2].trim());
+  for (const m of code.matchAll(/(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g)) if (wordy(m[2].trim()) && !codeLike(m[2].trim())) out.add(m[2].trim());
   for (const m of code.matchAll(/>([^<>{}]+)</g)) if (wordy(m[1].trim())) out.add(m[1].trim());
+  for (const m of code.matchAll(TEST_ID)) if (m[2].trim().length >= 2) out.add(m[2].trim()); // a test id is lowercase by habit, and tests look for it
   return out;
 }
 /** Words the edit took out: in the old text, not in the new one. */
@@ -39,15 +48,16 @@ export function usesIn(root, words) {
   const res = words.map((w) => ({ w, re: new RegExp(`(["'\`])${esc(w)}\\1`) }));
   const hits = [];
   let seen = 0;
+  const until = Date.now() + 1_500; // the hook has 5 s: a big tree took 6.8 s and was killed, having said nothing
   const walk = (dir) => {
     let list; try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of list) {
-      if (seen > 5000 || hits.length >= 40) return; // ponytail: a huge repo is checked in part, never slowly
+      // ponytail: a huge repo is checked in part, never slowly — every entry counts, not only the test files found
+      if (++seen > 20_000 || hits.length >= 40 || Date.now() > until) return;
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); continue; }
+      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name) && !e.name.startsWith(".")) walk(full); continue; }
       const rel = path.relative(root, full).split(path.sep).join("/");
       if (!e.isFile() || !isTestish(rel)) continue;
-      seen++;
       let text; try { if (fs.statSync(full).size > 512_000) continue; text = fs.readFileSync(full, "utf8"); } catch { continue; }
       text.split("\n").forEach((line, i) => { for (const { w, re } of res) if (re.test(line)) hits.push({ word: w, at: `${rel}:${i + 1}` }); });
     }

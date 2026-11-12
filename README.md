@@ -20,7 +20,7 @@ Developing the plugin itself: `claude plugin marketplace add /path/to/this/folde
 Claude Code asks for:
 
 - **QA Hub API key** — from QA Hub → *Account → API keys*. Claude Code keeps it as a secret setting (the system keychain on macOS), never in your project's files.
-- **QA Hub address** — the address you open QA Hub at (QA Hub's *Claude setup* card shows it). Leave the default for `https://app.qahub.dev`.
+- **QA Hub address** — the address you open QA Hub at (QA Hub's *Claude setup* card shows it). Leave the default for `https://qahub.sdsmanager.com`.
 
 Then, in your app's folder:
 
@@ -50,7 +50,7 @@ redirect, and never over plain `http` except to this computer or the office netw
 - `qahub_gaps` — what to test next: untested areas, failing tests
 - `qahub_design` — one module's behaviours (what a user can do there) with how far each is proven, and QA Hub's guide for testing each kind
 - `qahub_plan` — test cases in plain words (steps with expected results, type, priority, preconditions, what they cover) before any code; reviewed by a person when the project asks for it
-- `qahub_project` — the project's structure: the module tree (with addresses), hand-picked sets, every test with its steps and who made it, spec folders and shared helpers
+- `qahub_project` — the project's structure: the module tree (with addresses), hand-picked sets, every test (in a big project its title; a module's tests in full with `module`), spec folders and shared helpers
 - `qahub_find` — what already tests a behaviour (anyone's tests); SAME = QA Hub would refuse a new one as a duplicate
 - `qahub_code` — the app's code from the project's linked GitHub, read-only, for a QA without a checkout
 - `qahub_knowledge` / `qahub_learn` — what a Claude learned about the app's code, shared with the team (marked out of date when GitHub shows those files changed)
@@ -58,6 +58,11 @@ redirect, and never over plain `http` except to this computer or the office netw
 - `qahub_push` — send test files and the tests in them (only files inside this app's folder; `.env`, keys and anything under `.git` / `node_modules` are never sent). The reply lists each test's ref.
 - `qahub_run` — run tests on the person's own connected computer (signed in, real browser) and wait for the result: each failure's test, step, error, and whether the app broke or the page changed. By refs, a tag, a module, a set, or all.
 - `qahub_results` — a run's result (the latest, or by number)
+- `qahub_look` — open a page of the app on the person's computer and read what is really there (each control's role and name, a picture) before writing a test for it
+- `qahub_helpers` — the project's shared helper functions, so one is imported instead of written twice
+- `qahub_fixes` / `qahub_fix_note` — failing tests a person asked Claude to fix (with the screenshot), and Claude's plain-words answer
+- `qahub_wait_review` — wait for a person's decision on planned test cases
+- `qahub_map` — send the app's list of modules, so QA Hub shows what has no tests
 
 **Professional tests, enforced:** every module has behaviours, and each should be **proven** by a test whose code really checks it. QA Hub reads a pushed test's code: a create or edit test must read its typed values back after reopening, a delete test must check the item is gone, a validation test must check the message and that nothing was saved, and a page-opens-only test must be type smoke — otherwise the push is refused, saying what's missing. The Coverage page shows every behaviour as proven, failing, weak, not run, planned or untested.
 
