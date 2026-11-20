@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { client, gitBranch, isMain, QaHubError, VERSION } from "./qahub.mjs";
+import { client, gitBranch, isMain, QaHubError, said, VERSION } from "./qahub.mjs";
 
 const LINK_FILE = "qahub.json"; // in the app's repository: { "project": "<slug>" }
 const MAX_FILE = 512 * 1024;
@@ -20,6 +20,7 @@ const asText = (buf) => { if (buf.includes(0)) return null; try { return new Tex
 const SLUG = /^[a-z0-9-]{1,60}$/;
 const MAX_PUSH = 29 * 1024 * 1024; // QA Hub takes a push body up to 30 MB
 const SLOW = 120_000; // a push or a pull carries whole files
+const REHEARSE_WAIT = 150_000; // QA Hub's rehearsal answers within 120 s (load-tests.ts REHEARSE_WAIT_MS)
 
 /**
  * Where a test file may live — QA Hub's own rule (lib/paths.ts), applied here too, both ways: before a file is
@@ -374,6 +375,56 @@ export const TOOLS = [
     },
   },
 ];
+/**
+ * The Load testing chat's tools (spec 2026-11-20-load-testing §2): listed — and callable — only when Hydra started this
+ * server for that chat (QAHUB_LOAD=1). They save the draft and rehearse it; nothing here starts a load test: only the
+ * person's Start on QA Hub's page does.
+ */
+const JOURNEY_STEP = { type: "object", required: ["name", "method", "path"], properties: {
+  name: { type: "string", maxLength: 80 }, method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+  path: { type: "string", description: "Relative to the place, starting with one / (e.g. /api/cart) — never a full address" },
+  json: { description: "A JSON body (or form, not both)" }, form: { type: "object", additionalProperties: { type: "string" } },
+  headers: { type: "object", additionalProperties: { type: "string" }, description: "Only Accept, Content-Type, Authorization, X-CSRF-Token, X-XSRF-TOKEN, X-API-Key; all but Accept and Content-Type take only {{a saved value}}" },
+  save: { type: "object", additionalProperties: { type: "string" }, description: "Values for later steps: { productId: \"$.items[0].id\" }, used as {{productId}}" },
+  expect: { type: "array", items: { type: "integer" }, description: "The statuses that count as passed (default: 2xx and 3xx)" },
+} };
+export const LOAD_TOOLS = [
+  {
+    name: "qahub_load_save",
+    description: "Save the load test's draft in QA Hub (a new one, or number's changed). It does NOT start it — only the person's Start does. QA Hub checks the journey; a refusal names the rule — fix the journey and save again with the same number.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["name", "place", "journey", "plan", "accounts"],
+      properties: {
+        project: { type: "string", description: "Leave out to use the linked project" },
+        number: { type: "integer", minimum: 1, description: "The load test to change (its #); leave out for a new one" },
+        name: { type: "string", minLength: 1, maxLength: 120, description: "Plain words, e.g. Checkout rush" },
+        place: { type: "string", description: "The place's id (your message names it)" },
+        journey: { type: "object", required: ["steps", "think", "signIn"], properties: {
+          steps: { type: "array", minItems: 1, maxItems: 20, items: JOURNEY_STEP },
+          think: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[min, max] seconds between steps, e.g. [2, 5]" },
+          signIn: { type: "string", enum: ["session", "step"], description: "session: QA Hub signs each person in as an account first" },
+        } },
+        plan: { type: "object", additionalProperties: false, required: ["people", "rampSec", "holdSec"], properties: {
+          people: { type: "integer", minimum: 1, maximum: 5000 }, rampSec: { type: "integer", minimum: 0 }, holdSec: { type: "integer", minimum: 0 } } },
+        limits: { type: "object", additionalProperties: false, properties: { p95Ms: { type: "integer", minimum: 100 }, failRate: { type: "number", minimum: 0, maximum: 0.5 } } },
+        accounts: { type: "array", maxItems: 500, items: { type: "string" }, description: "The test accounts' names the people sign in as (names only)" },
+      },
+    },
+  },
+  {
+    name: "qahub_load_rehearse",
+    description: "Rehearse a saved load test: one person walks the journey once on the person's computer; waits for it (up to 2 minutes) and gives each step's answer. Start needs a passing rehearsal of this very journey. It never starts the load test.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["number"], properties: {
+      project: { type: "string", description: "Leave out to use the linked project" },
+      number: { type: "integer", minimum: 1, description: "The load test's # (qahub_load_save answered it)" },
+    } },
+  },
+];
+TOOLS.push(...LOAD_TOOLS);
+const LOAD_NAMES = new Set(LOAD_TOOLS.map((t) => t.name));
+/** The tools this server offers: the load ones only to the Load testing chat. */
+export const listed = (env = process.env) => TOOLS.filter((t) => env.QAHUB_LOAD === "1" || !LOAD_NAMES.has(t.name));
+
 // Every tool takes the folder Claude works in: Claude Code may have started in the main checkout while Claude works in a
 // worktree (hooks/folder-check.mjs refuses a call made from elsewhere without it).
 const FOLDER = { type: "string", description: "The full path of the folder you're working in (your current working directory) when it isn't where Claude Code started — e.g. a git worktree of this app. Its files and branch are used." };
@@ -939,6 +990,24 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       if (l.shot) content.push({ type: "image", data: l.shot, mimeType: "image/jpeg" });
       return { content };
     },
+    async qahub_load_save({ project, number, name, place, journey, plan, limits, accounts = [] } = {}) {
+      if (env.QAHUB_LOAD !== "1") throw new QaHubError("Load tests are built in QA Hub's Load testing chat only.");
+      await qa.whoami();
+      const p = projectOf(project);
+      const r = await qa.call("POST", `/api/v1/projects/${p}/load-tests`, { ...(number ? { number } : {}), name, place, journey, plan, ...(limits ? { limits } : {}), accounts });
+      return `Saved as load test #${r.number}. Now rehearse it: qahub_load_rehearse { number: ${r.number} }. Never start it — the person presses Start on the page.`;
+    },
+    async qahub_load_rehearse({ project, number } = {}) {
+      if (env.QAHUB_LOAD !== "1") throw new QaHubError("Load tests are built in QA Hub's Load testing chat only.");
+      await qa.whoami();
+      const p = projectOf(project);
+      if (!Number.isInteger(number) || number < 1) throw new QaHubError("number is the load test's #, from qahub_load_save");
+      // QA Hub waits up to 2 minutes for the computer's answer: this call waits a little longer.
+      const r = await qa.call("POST", `/api/v1/projects/${p}/load-tests/${number}/rehearse`, {}, { timeout: REHEARSE_WAIT });
+      const steps = (r.steps ?? []).map((st, i) => `${i + 1}. ${said(st.name, 80)}: ${st.status ?? "no answer"}${st.ms != null ? ` in ${st.ms} ms` : ""}${st.json === false ? " (a web page, not the API's JSON)" : ""}${st.error ? ` — ${said(st.error, 300)}` : ""}`);
+      return [r.ok ? `Rehearsal of load test #${number} passed — every step answered as expected.` : `Rehearsal of load test #${number} failed: fix the step that failed, save it again (number: ${number}) and rehearse again.`,
+        ...steps, r.ok ? "Offer the test to the person: they press Start on the page. Never start it yourself." : ""].filter(Boolean).join("\n");
+    },
     async qahub_fix_note({ project, test, kind, note } = {}) {
       await qa.whoami();
       const p = projectOf(project);
@@ -1149,9 +1218,9 @@ export function serve(input = process.stdin, output = process.stdout, impl = too
         return send({ jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOLS.includes(params?.protocolVersion) ? params.protocolVersion : PROTOCOLS[0], capabilities: { tools: {} }, serverInfo: { name: "qahub", version: VERSION } } });
       }
       if (method === "ping") return send({ jsonrpc: "2.0", id, result: {} });
-      if (method === "tools/list") return send({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
+      if (method === "tools/list") return send({ jsonrpc: "2.0", id, result: { tools: listed() } });
       if (method === "tools/call") {
-        const fn = Object.hasOwn(impl, String(params?.name)) ? impl[params.name] : null; // never an inherited "constructor"
+        const fn = Object.hasOwn(impl, String(params?.name)) && listed().some((t) => t.name === params.name) ? impl[params.name] : null; // never an inherited "constructor", nor a tool not listed here
         if (!fn) return send({ jsonrpc: "2.0", id, error: { code: -32602, message: `Unknown tool ${params?.name}` } });
         try {
           const out = await fn(params.arguments ?? {});
