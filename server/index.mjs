@@ -405,7 +405,7 @@ export const LOAD_TOOLS = [
           signIn: { type: "string", enum: ["session", "step"], description: "session: QA Hub signs each person in as an account first" },
         } },
         plan: { type: "object", additionalProperties: false, required: ["people", "rampSec", "holdSec"], properties: {
-          people: { type: "integer", minimum: 1, maximum: 5000 }, rampSec: { type: "integer", minimum: 0 }, holdSec: { type: "integer", minimum: 0 } } },
+          people: { type: "integer", minimum: 1, maximum: 5000 }, rampSec: { type: "integer", minimum: 1, maximum: 3600, description: "Seconds to grow to all the people (at least 1)" }, holdSec: { type: "integer", minimum: 1, maximum: 3600, description: "Seconds to hold them (at least 1; ramp + hold ≤ 3600)" } } },
         limits: { type: "object", additionalProperties: false, properties: { p95Ms: { type: "integer", minimum: 100 }, failRate: { type: "number", minimum: 0, maximum: 0.5 } } },
         accounts: { type: "array", maxItems: 500, items: { type: "string" }, description: "The test accounts' names the people sign in as (names only)" },
       },
@@ -1005,7 +1005,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       // QA Hub waits up to 2 minutes for the computer's answer: this call waits a little longer.
       const r = await qa.call("POST", `/api/v1/projects/${p}/load-tests/${number}/rehearse`, {}, { timeout: REHEARSE_WAIT });
       const steps = (r.steps ?? []).map((st, i) => `${i + 1}. ${said(st.name, 80)}: ${st.status ?? "no answer"}${st.ms != null ? ` in ${st.ms} ms` : ""}${st.json === false ? " (a web page, not the API's JSON)" : ""}${st.error ? ` — ${said(st.error, 300)}` : ""}`);
-      return [r.ok ? `Rehearsal of load test #${number} passed — every step answered as expected.` : `Rehearsal of load test #${number} failed: fix the step that failed, save it again (number: ${number}) and rehearse again.`,
+      // A failed rehearsal comes back 200 { ok: false, steps, error } — the computer's sentence names what stopped it.
+      return [r.ok ? `Rehearsal of load test #${number} passed — every step answered as expected.` : `Rehearsal of load test #${number} failed${r.error ? ` (${said(r.error, 300)})` : ""}: fix the step that failed, save it again (number: ${number}) and rehearse again.`,
         ...steps, r.ok ? "Offer the test to the person: they press Start on the page. Never start it yourself." : ""].filter(Boolean).join("\n");
     },
     async qahub_fix_note({ project, test, kind, note } = {}) {

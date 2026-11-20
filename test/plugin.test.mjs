@@ -97,7 +97,7 @@ const server = http.createServer((req, res) => {
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
     // The Load testing chat's tools (QAHUB_LOAD=1): a save QA Hub refuses with its rule's words, a rehearsal's answer.
     if (u.pathname === "/api/v1/projects/freight/load-tests" && req.method === "POST") { const body = JSON.parse(b); loadSaves.push(body); return body.journey?.steps?.[0]?.path?.startsWith("/") ? out(200, { number: body.number ?? 1 }) : out(400, { error: { code: "invalid_request", message: 'The journey isn\'t valid: path must be relative to the place (start with one "/", no scheme, no "\\")' } }); }
-    if (u.pathname === "/api/v1/projects/freight/load-tests/1/rehearse" && req.method === "POST") return out(200, { ok: false, steps: [{ name: "Add to cart", status: 422, ms: 41, error: "productId is required" }] });
+    if (u.pathname === "/api/v1/projects/freight/load-tests/1/rehearse" && req.method === "POST") return out(200, { ok: false, steps: [{ name: "Open the shop", status: 200, ms: 30, json: true }, { name: "Add to cart", status: 422, ms: 41, json: false }], error: "“Add to cart” answered 422" }); // QA Hub's shape for a rehearsal that ran and failed (load-tests.ts rehearseLoad)
     if (u.pathname === "/api/v1/projects/freight/look" && req.method === "POST") { const body = JSON.parse(b); return body.path === "/broken"
       ? out(200, { status: "failed", error: "Couldn't open /broken. Is your app running?" })
       : out(200, { status: "done", look: { url: `http://localhost:5174${body.path}`, title: "Quotes", snapshot: '- heading "Quotes" [level=1]\n- button "New quote"', shot: PNG.toString("base64"), errors: ["TypeError: x is undefined"] } }); }
@@ -1742,7 +1742,12 @@ test("the load tools are listed only in the Load testing chat (QAHUB_LOAD=1): sa
   const load = await list({ QAHUB_LOAD: "1" });
   assert.ok(load.names.includes("qahub_load_save") && load.names.includes("qahub_load_rehearse"));
   assert.ok(!load.names.some((n) => /start/.test(n) && /load/.test(n)), "no tool starts a load test");
-  assert.match(load.call.result.content[0].text, /Add to cart.*422/s);
+  const said = load.call.result.content[0].text;
+  assert.match(said, /failed \(“Add to cart” answered 422\)/);
+  assert.match(said, /2\. Add to cart: 422 in 41 ms \(a web page, not the API's JSON\)/, "each step, and the JSON hint");
+  // Ramp and hold: at least a second each (QA Hub refuses less; Hydra would fail it after signing everyone in).
+  const plan0 = load.names && (await import("../server/index.mjs")).LOAD_TOOLS.find((x) => x.name === "qahub_load_save").inputSchema.properties.plan.properties;
+  assert.deepEqual([plan0.rampSec.minimum, plan0.holdSec.minimum], [1, 1]);
   const plain = await list({ QAHUB_LOAD: "" });
   assert.ok(!plain.names.some((n) => n.startsWith("qahub_load")), "no other chat or session lists them");
   assert.match(plain.call.error.message, /Unknown tool qahub_load_rehearse/, "nor can call them");
