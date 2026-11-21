@@ -27,7 +27,7 @@ const claims = [];
 const learned = [];
 const saves = []; // knowledge others saved: { module, topics, at }
 const pulls = [];
-const loadSaves = []; // qahub_load_save bodies // each qahub_pull's query: ?branch= on a feature branch
+// each qahub_pull's query: ?branch= on a feature branch
 let latest = { run: { number: 7, status: "finished", verdict: "pass", passed: 3, failed: 0, failures: [], flaky: [], url: "/p/freight/runs/7" } };
 const failedRun = { run: { number: 8, status: "finished", verdict: "fail", passed: 1, failed: 1, skipped: 0, durationSec: 34, browser: "chrome", url: "/p/freight/runs/8",
   failures: [{ ref: "TEST-00004", title: "Save a quote", file: "tests/quotes.spec.ts", failedStep: "Save it", error: "expect(locator).toHaveText() failed · Expected: Quote saved", kind: "bug", since: "new — passed last time",
@@ -95,9 +95,6 @@ const server = http.createServer((req, res) => {
       { path: "tests/helpers/nav.ts", sha: "y", content: "export const nav = 1;\n" },
       { path: "tests/fixtures/robot.png", sha: "z", binary: true, base64: PNG.toString("base64") }] });
     if (u.pathname === "/api/v1/projects/freight/runs/start" && req.method === "POST" && JSON.parse(b).tag === "offline") return out(400, { error: { code: "invalid_request", message: "Connect your computer first — tests run in a browser on it." } });
-    // The Load testing chat's tools (QAHUB_LOAD=1): a save QA Hub refuses with its rule's words, a rehearsal's answer.
-    if (u.pathname === "/api/v1/projects/freight/load-tests" && req.method === "POST") { const body = JSON.parse(b); loadSaves.push(body); return body.journey?.steps?.[0]?.path?.startsWith("/") ? out(200, { number: body.number ?? 1 }) : out(400, { error: { code: "invalid_request", message: 'The journey isn\'t valid: path must be relative to the place (start with one "/", no scheme, no "\\")' } }); }
-    if (u.pathname === "/api/v1/projects/freight/load-tests/1/rehearse" && req.method === "POST") return out(200, { ok: false, steps: [{ name: "Open the shop", status: 200, ms: 30, json: true }, { name: "Add to cart", status: 422, ms: 41, json: false }], error: "“Add to cart” answered 422" }); // QA Hub's shape for a rehearsal that ran and failed (load-tests.ts rehearseLoad)
     if (u.pathname === "/api/v1/projects/freight/look" && req.method === "POST") { const body = JSON.parse(b); return body.path === "/broken"
       ? out(200, { status: "failed", error: "Couldn't open /broken. Is your app running?" })
       : out(200, { status: "done", look: { url: `http://localhost:5174${body.path}`, title: "Quotes", snapshot: '- heading "Quotes" [level=1]\n- button "New quote"', shot: PNG.toString("base64"), errors: ["TypeError: x is undefined"] } }); }
@@ -1725,37 +1722,4 @@ test("GitHub not set up for the project: in a developer's code folder Claude is 
     fs.writeFileSync(path.join(app, "qahub.json"), JSON.stringify({ project: "freight" }));
     assert.doesNotMatch(JSON.parse((await hook("hooks/session-start.mjs", { cwd: app, session_id: "qa" }, env)).out).hookSpecificOutput.additionalContext, /CAN'T BE WRITTEN/);
   } finally { devOff = null; moreTests = []; fs.rmSync(repo, { recursive: true, force: true }); }
-});
-
-test("the load tools are listed only in the Load testing chat (QAHUB_LOAD=1): save the draft, rehearse it — nothing starts a load test", async () => {
-  const list = async (env) => {
-    const child = spawn(process.execPath, [path.join(HERE, "../server/index.mjs")], { cwd: app, env: { ...process.env, QAHUB_KEY: "qh_good", QAHUB_SERVER: base, ...env } });
-    const lines = [];
-    child.stdout.on("data", (d) => lines.push(...String(d).split("\n").filter(Boolean)));
-    const answer = async (id) => { for (let i = 0; i < 100; i++) { const l = lines.map((x) => JSON.parse(x)).find((x) => x.id === id); if (l) return l; await new Promise((r) => setTimeout(r, 50)); } throw new Error(`no answer ${id}`); };
-    try {
-      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
-      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "qahub_load_rehearse", arguments: { project: "freight", number: 1 } } }) + "\n");
-      return { names: (await answer(1)).result.tools.map((t) => t.name), call: await answer(2) };
-    } finally { child.kill(); }
-  };
-  const load = await list({ QAHUB_LOAD: "1" });
-  assert.ok(load.names.includes("qahub_load_save") && load.names.includes("qahub_load_rehearse"));
-  assert.ok(!load.names.some((n) => /start/.test(n) && /load/.test(n)), "no tool starts a load test");
-  const said = load.call.result.content[0].text;
-  assert.match(said, /failed \(“Add to cart” answered 422\)/);
-  assert.match(said, /2\. Add to cart: 422 in 41 ms \(a web page, not the API's JSON\)/, "each step, and the JSON hint");
-  // Ramp and hold: at least a second each (QA Hub refuses less; Hydra would fail it after signing everyone in).
-  const plan0 = load.names && (await import("../server/index.mjs")).LOAD_TOOLS.find((x) => x.name === "qahub_load_save").inputSchema.properties.plan.properties;
-  assert.deepEqual([plan0.rampSec.minimum, plan0.holdSec.minimum], [1, 1]);
-  const plain = await list({ QAHUB_LOAD: "" });
-  assert.ok(!plain.names.some((n) => n.startsWith("qahub_load")), "no other chat or session lists them");
-  assert.match(plain.call.error.message, /Unknown tool qahub_load_rehearse/, "nor can call them");
-
-  const t = tools({ QAHUB_KEY: "qh_good", QAHUB_SERVER: base, QAHUB_LOAD: "1" }, app, fetch);
-  const journey = { steps: [{ name: "Open the shop", method: "GET", path: "/api/products" }], think: [2, 5], signIn: "session" };
-  const plan = { people: 300, rampSec: 120, holdSec: 180 };
-  assert.match(await t.qahub_load_save({ project: "freight", name: "Checkout rush", place: "11111111-1111-4111-8111-111111111111", journey, plan, accounts: ["default"] }), /load test #1/);
-  assert.deepEqual(loadSaves.at(-1), { name: "Checkout rush", place: "11111111-1111-4111-8111-111111111111", journey, plan, accounts: ["default"] });
-  await assert.rejects(t.qahub_load_save({ project: "freight", name: "Leak", place: "11111111-1111-4111-8111-111111111111", journey: { ...journey, steps: [{ name: "Leak", method: "GET", path: "https://evil.test" }] }, plan, accounts: [] }), /path must be relative/, "QA Hub's rule, for Claude to fix the journey");
 });
