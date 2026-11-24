@@ -1251,6 +1251,16 @@ test("knowledge: the recorder chat's tools count from QAHUB_KNOWLEDGE_SINCE, not
   saves.length = 0;
 });
 
+test("the recorder chat saves a test that switches account untried — only a run can prove a switch; its neighbours still need their tries", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qh-app-"));
+  fs.mkdirSync(path.join(dir, "qahub"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "qahub", "a.spec.ts"), 'test("S", async ({ page, qahub }) => { await qahub.signInAs(page, "manager"); });\ntest("N", async () => {});');
+  const t = (title) => ({ file: "qahub/a.spec.ts", title });
+  assert.deepEqual(unprovenTests(dir, [t("S")]), [], "a try can't switch account, so it never proves one (Eclipse leaves it out)");
+  assert.deepEqual(unprovenTests(dir, [t("N")]), [{ title: "N", why: "never tried" }]);
+  assert.deepEqual(provenTests(dir, [t("S")]), [], "saved, never credited: QA Hub's runs prove it");
+});
+
 test("the recorder chat saves only tried tests: passed twice in a row with this exact code, or failed on a check and marked a known app bug", async () => {
   const { createHash } = await import("node:crypto");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qh-app-"));

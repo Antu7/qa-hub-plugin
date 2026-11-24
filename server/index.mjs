@@ -954,7 +954,8 @@ export function tools(env = process.env, cwd = process.cwd(), fetchImpl = fetch,
       // Passed twice on this computer with this exact code (try_tests): QA Hub counts them verified — no run of its own.
       const proven = provenTests(root(), tests);
       // The recorder chat saves only what was tried: each test passed twice in a row in try_tests with its code exactly as
-      // sent — or failed its last try on a check and is marked a known app bug (tagged, so the person sees it). Refused
+      // sent — or failed its last try on a check and is marked a known app bug (tagged, so the person sees it); one that
+      // switches account is saved untried (a try can't switch — QA Hub's runs prove it, switchesAccount). Refused
       // here, before anything is sent (unprovenTests).
       if (process.env.QAHUB_CHAT && tests.length) {
         const unproven = unprovenTests(root(), tests);
@@ -1064,7 +1065,18 @@ function helpersOf(src, file, read) {
  */
 export function unprovenTests(root, tests) {
   const proof = proofOf(root);
-  return tests.map((t) => ({ title: t.title, why: t.knownBug ? notABug(root, proof, t) : notProven(root, proof, t, 2) })).filter((x) => x.why);
+  return tests.map((t) => ({ title: t.title, why: t.knownBug ? notABug(root, proof, t) : switchesAccount(root, t) ? null : notProven(root, proof, t, 2) })).filter((x) => x.why);
+}
+
+/**
+ * A test that switches account (qahub.signInAs — in its own code, the file's shared code or a helper it imports): a try
+ * can't switch, so Eclipse never tries it (the connector's try.mjs, same rule) — it's saved untried and QA Hub's runs,
+ * which prove every switch, give it its passes. Never credited as proven here (provenTests still needs two passes).
+ */
+function switchesAccount(root, t) {
+  const read = (p) => { try { return fs.readFileSync(path.join(root, p), "utf8"); } catch { return null; } };
+  const content = read(t.file);
+  return content !== null && /\bsignInAs\(/.test(proofText(content, t.title, t.file, read));
 }
 
 /** Why a test marked knownBug isn't shown to be one, or null: its last try of this code failed on a check. */
