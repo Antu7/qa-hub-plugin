@@ -437,6 +437,9 @@ export function describeProject(s, module) {
   // 236 tests — Claude Code shows a tool's answer up to 50,000 characters, the rest goes to a file Claude reads in pieces or
   // not at all. Titles are what keeps a test from being written twice; the rest is one module away.
   const slim = !want && s.tests.length > SLIM_OVER;
+  // Eclipse's chat (2026-11-28): its message already lists the page's module's tests and behaviours, and this overview was
+  // ~24k tokens there, re-read at every later step of the answer — so the modules and the rest, never every test's line.
+  const brief = !want && !!process.env.QAHUB_CHAT;
   for (const [mod, ts] of byModule) {
     list.push(`${mod}:`);
     for (const t of ts) {
@@ -462,7 +465,7 @@ export function describeProject(s, module) {
   return [
     `Project ${s.slug}${s.name ? ` (${s.name})` : ""}.`,
     `Modules (the app's areas, in its menu order — a test belongs to the one for the page it covers):\n${tree.join("\n") || "none yet"}`,
-    ...(designed.length ? [named.length > 4_000 && !want
+    ...(designed.length ? [(named.length > 4_000 || brief) && !want
       ? `Behaviours (what each module should be tested for), counted — qahub_design { module } names them, with its guide:\n${counted()}`
       : `Behaviours (what each module should be tested for — qahub_design shows one module with its guide):\n${named}`]
       : ["Behaviours: none designed yet — qahub_design a module, then propose its behaviours with qahub_plan."]),
@@ -473,7 +476,8 @@ export function describeProject(s, module) {
     `Environments: ${s.environments.map((e) => `${e.name} (${e.url})`).join(", ") || "none"}.`,
     describeAccounts(s),
     describeVariables(s),
-    `Tests (${s.tests.length}):\n${list.join("\n") || "none yet"}`,
+    brief ? `Tests: ${s.tests.length} in all — your message lists the page's module's; qahub_project { module } lists another module's, qahub_find looks up whether one exists.`
+      : `Tests (${s.tests.length}):\n${list.join("\n") || "none yet"}`,
   ].join("\n\n");
 }
 

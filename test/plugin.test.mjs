@@ -377,6 +377,25 @@ test("the recorder chat gets no checklist hook (its own instructions say how: no
   } finally { delete process.env.QAHUB_CHAT; fs.rmSync(seen, { force: true }); }
 });
 
+test("in Eclipse's chat the project's overview leaves out every test's line and the behaviours' names — its message has the page's module; one module still comes whole (2026-11-28)", () => {
+  // The overview cost ~24k tokens a call there (192 calls in a month), re-read at every later step of the answer.
+  const tests = Array.from({ length: 200 }, (_, i) => ({ ref: `TEST-${String(i + 1).padStart(5, "0")}`, title: `Test number ${i + 1} of the quotes`, file: "qahub/quotes/a.spec.ts", module: i % 2 ? "Quotes" : "Training", steps: ["Open"] }));
+  const project = { name: "EHS", slug: "ehs", environments: [], sets: [], tags: [], folders: [], helpers: [], tests,
+    modules: [{ name: "Training", path: "/training", tests: 100, behaviours: [{ name: "Create a course", state: "proven" }] }, { name: "Quotes", path: "/quotes", tests: 100, behaviours: [{ name: "Send a quote", state: "untested" }] }] };
+  const terminal = describeProject(project);
+  assert.match(terminal, /TEST-00001 “Test number 1 of the quotes”/);
+  process.env.QAHUB_CHAT = "1";
+  try {
+    const chat = describeProject(project);
+    assert.doesNotMatch(chat, /TEST-00001/);
+    assert.doesNotMatch(chat, /Create a course/);
+    assert.match(chat, /- Training \(\/training\) — 100 tests/);
+    assert.match(chat, /Tests: 200 in all — your message lists the page's module's; qahub_project \{ module \} lists another module's, qahub_find looks up whether one exists/);
+    assert.ok(chat.length < terminal.length / 3, `${chat.length} vs ${terminal.length}`);
+    assert.match(describeProject(project, "Quotes"), /TEST-00002 “Test number 2 of the quotes”/); // one module: whole, as before
+  } finally { delete process.env.QAHUB_CHAT; }
+});
+
 test("status says whether tests can run now: the computer, the environments", async () => {
   const t = as("qh_good");
   await t.qahub_link({ project: "freight" });
